@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
-import { db } from './src/db/index.ts';
+import { db, isDbConfigured } from './src/db/index.ts';
 import { categories, products } from './src/db/schema.ts';
 import { ensureSeeded } from './src/db/seed.ts';
 import { adminRouter } from './src/server/routes/admin.ts';
@@ -29,6 +29,16 @@ async function startServer() {
     next();
   });
 
+  // Fail fast on DB-backed API routes when database is not configured so client offline store handles requests cleanly
+  app.use('/api', (req, res, next) => {
+    if (isDbConfigured || req.path === '/health' || req.path.startsWith('/pincode/')) {
+      return next();
+    }
+    return res.status(503).json({
+      error: 'Database not connected — using offline storefront mode.',
+    });
+  });
+
   // API Routes
   app.use('/api', storefrontRouter);
   app.use('/api', authRouter);
@@ -44,20 +54,20 @@ async function startServer() {
 
   app.get('/sitemap.xml', async (req, res) => {
     try {
-      await ensureSeeded();
       const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-      const [cats, prods] = await Promise.all([
-        db.select({ slug: categories.slug }).from(categories).where(eq(categories.isActive, true)),
-        db.select({ slug: products.slug }).from(products).where(eq(products.isActive, true)),
-      ]);
-      const urls = [
-        `${baseUrl}/`,
-        `${baseUrl}/shop`,
-        `${baseUrl}/support`,
-        `${baseUrl}/faq`,
-        ...cats.map((c) => `${baseUrl}/category/${c.slug}`),
-        ...prods.map((p) => `${baseUrl}/product/${p.slug}`),
-      ];
+      let urls = [`${baseUrl}/`, `${baseUrl}/shop`, `${baseUrl}/support`, `${baseUrl}/faq`];
+      if (isDbConfigured) {
+        await ensureSeeded();
+        const [cats, prods] = await Promise.all([
+          db.select({ slug: categories.slug }).from(categories).where(eq(categories.isActive, true)),
+          db.select({ slug: products.slug }).from(products).where(eq(products.isActive, true)),
+        ]);
+        urls = [
+          ...urls,
+          ...cats.map((c) => `${baseUrl}/category/${c.slug}`),
+          ...prods.map((p) => `${baseUrl}/product/${p.slug}`),
+        ];
+      }
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
         .map((u) => `  <url><loc>${u}</loc></url>`)
         .join('\n')}\n</urlset>`;
