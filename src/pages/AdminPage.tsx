@@ -1605,18 +1605,39 @@ export const AdminPage: React.FC = () => {
               <h3 className="font-display text-base font-bold text-[#0B1F3A]">Store, Shipping & GST Settings</h3>
               <div className="grid sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-500 mb-1">Announcement Banner</label>
+                  <label className="block text-slate-500 mb-1">Support Email Address</label>
                   <input
-                    value={settingsForm.announcementText}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, announcementText: e.target.value })}
+                    type="email"
+                    required
+                    value={settingsForm.supportEmail || ''}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, supportEmail: e.target.value })}
+                    placeholder="support@aagamanmart.in"
                     className="w-full h-9 px-3 rounded-lg border border-slate-300"
                   />
                 </div>
                 <div>
                   <label className="block text-slate-500 mb-1">Support Phone</label>
                   <input
-                    value={settingsForm.supportPhone}
+                    value={settingsForm.supportPhone || ''}
                     onChange={(e) => setSettingsForm({ ...settingsForm, supportPhone: e.target.value })}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-500 mb-1">Store Location / Headquarters Address</label>
+                  <input
+                    required
+                    value={settingsForm.headquarters || ''}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, headquarters: e.target.value })}
+                    placeholder="Aagaman Commerce Tower, Bandra Kurla Complex, Mumbai 400051"
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-500 mb-1">Announcement Banner</label>
+                  <input
+                    value={settingsForm.announcementText || ''}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, announcementText: e.target.value })}
                     className="w-full h-9 px-3 rounded-lg border border-slate-300"
                   />
                 </div>
@@ -1656,7 +1677,7 @@ export const AdminPage: React.FC = () => {
                 <div>
                   <label className="block text-slate-500 mb-1">Flash Sale Headline</label>
                   <input
-                    value={settingsForm.flashSaleTitle}
+                    value={settingsForm.flashSaleTitle || ''}
                     onChange={(e) => setSettingsForm({ ...settingsForm, flashSaleTitle: e.target.value })}
                     className="w-full h-9 px-3 rounded-lg border border-slate-300"
                   />
@@ -1668,7 +1689,14 @@ export const AdminPage: React.FC = () => {
 
               <div className="pt-4 border-t border-slate-200 space-y-2 text-slate-600">
                 <p className="font-bold text-[#0B1F3A] flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-[#EA580C]" /> Optional Live Payment & Notification Credentials
+                  <CheckCircle2 className="w-4 h-4 text-[#EA580C]" /> Private Admin Access & Live Credentials
+                </p>
+                <p>
+                  Public Admin links are hidden from shoppers. Bookmark{' '}
+                  <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[#0B1F3A] font-semibold">
+                    {typeof window !== 'undefined' ? `${window.location.origin}/admin` : '/admin'}
+                  </code>{' '}
+                  to open the Admin Console anytime.
                 </p>
                 <p>
                   AAGAMAN MART runs smoothly out of the box in Sandbox Mode with zero required environment variables (universal password enabled — no{' '}

@@ -127,14 +127,6 @@ export const Footer: React.FC = () => {
                 XML Sitemap
               </a>
             </li>
-            <li>
-              <button
-                onClick={() => navigate('/admin')}
-                className="text-[#FDBA74] hover:text-white font-semibold transition-colors pt-1"
-              >
-                Admin Store Console →
-              </button>
-            </li>
           </ul>
         </div>
       </div>

@@ -366,13 +366,6 @@ export const Navbar: React.FC = () => {
           >
             Support
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('/admin')}
-            className="whitespace-nowrap shrink-0 text-[#FDBA74] hover:text-white transition-colors py-1"
-          >
-            Admin Portal
-          </button>
         </div>
       </nav>
 
@@ -410,11 +403,11 @@ export const Navbar: React.FC = () => {
             <button
               onClick={() => {
                 setMobileMenuOpen(false);
-                navigate('/admin');
+                navigate('/support');
               }}
-              className="text-left px-3 py-2 rounded-lg bg-white/5 text-sm font-medium text-[#FDBA74]"
+              className="text-left px-3 py-2 rounded-lg bg-white/5 text-sm font-medium"
             >
-              Admin Dashboard
+              Support
             </button>
           </div>
           <div className="pt-2 border-t border-white/10">

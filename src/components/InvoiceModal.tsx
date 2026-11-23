@@ -1,6 +1,6 @@
 import React from 'react';
 import { Printer, X } from 'lucide-react';
-import { formatINR } from '../context/StoreContext';
+import { formatINR, useStore } from '../context/StoreContext';
 import type { OrderRecord } from '../types';
 
 interface InvoiceModalProps {
@@ -9,6 +9,7 @@ interface InvoiceModalProps {
 }
 
 export const InvoiceModal: React.FC<InvoiceModalProps> = ({ order, onClose }) => {
+  const { config } = useStore();
   if (!order) return null;
 
   return (
@@ -36,9 +37,9 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ order, onClose }) =>
               <h2 className="font-display text-2xl font-extrabold text-[#0B1F3A]">AAGAMAN MART</h2>
               <p className="text-xs text-slate-500 mt-0.5">Quality That Moves You Forward.</p>
               <p className="text-xs text-slate-600 mt-2">
-                Aagaman Commerce Tower, Bandra Kurla Complex, Mumbai 400051
+                {config?.headquarters || 'Aagaman Commerce Tower, Bandra Kurla Complex, Mumbai 400051'}
                 <br />
-                GSTIN: 27AABCA9876K1Z5 · Email: support@aagamanmart.in
+                GSTIN: 27AABCA9876K1Z5 · Email: {config?.supportEmail || 'support@aagamanmart.in'}
               </p>
             </div>
             <div className="text-right">
