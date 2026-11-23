@@ -43,6 +43,13 @@ export const HomePage: React.FC = () => {
   }, []);
 
   const banners = config?.banners || [];
+  const activeBanner = banners[heroIndex] || banners[0];
+
+  useEffect(() => {
+    if (banners.length > 0 && heroIndex >= banners.length) {
+      setHeroIndex(0);
+    }
+  }, [banners.length, heroIndex]);
 
   useEffect(() => {
     if (banners.length <= 1) return;
@@ -114,11 +121,11 @@ export const HomePage: React.FC = () => {
       {/* 1. Promotional Hero Slider */}
       <section className="relative bg-[#0B1F3A] text-white overflow-hidden">
         <div className="max-w-[1440px] mx-auto relative">
-          {banners.length > 0 && (
+          {activeBanner && (
             <div className="relative min-h-[380px] lg:min-h-[480px] flex items-center">
               <img
-                src={resolveAssetUrl(banners[heroIndex]?.imageUrl)}
-                alt={banners[heroIndex]?.title}
+                src={resolveAssetUrl(activeBanner.imageUrl)}
+                alt={activeBanner.title}
                 referrerPolicy="no-referrer"
                 className="absolute inset-0 w-full h-full object-cover"
               />
@@ -126,21 +133,27 @@ export const HomePage: React.FC = () => {
 
               <div className="relative z-10 px-6 lg:px-14 py-14 max-w-2xl space-y-5">
                 <p className="text-xs font-semibold uppercase tracking-wider text-[#FDBA74]">
-                  {banners[heroIndex]?.kicker}
+                  {activeBanner.kicker}
                 </p>
                 <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight text-balance">
-                  {banners[heroIndex]?.title}
+                  {activeBanner.title}
                 </h1>
                 <p className="text-sm sm:text-base text-slate-200 leading-relaxed max-w-xl">
-                  {banners[heroIndex]?.subtitle}
+                  {activeBanner.subtitle}
                 </p>
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                   <button
                     type="button"
-                    onClick={() => navigate(`/category/${banners[heroIndex]?.categorySlug}`)}
+                    onClick={() =>
+                      navigate(
+                        !activeBanner.categorySlug || activeBanner.categorySlug === 'all'
+                          ? '/shop'
+                          : `/category/${activeBanner.categorySlug}`
+                      )
+                    }
                     className="px-6 py-3 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center gap-2 transition-colors whitespace-nowrap"
                   >
-                    <span>{banners[heroIndex]?.ctaLabel}</span>
+                    <span>{activeBanner.ctaLabel}</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                   <button

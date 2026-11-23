@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   CheckCircle2,
   CreditCard,
@@ -18,6 +20,7 @@ import {
   Star,
   Tag,
   Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -53,7 +56,7 @@ import {
   updateStaticAdminTicketStatus,
   verifyStaticAdminLogin,
 } from '../lib/static-store';
-import type { OrderRecord, StoreConfig } from '../types';
+import type { BannerItem, OrderRecord, StoreConfig } from '../types';
 
 const STUDIO_IMAGE_PRESETS: Array<{ label: string; url: string }> = [
   { label: 'Wireless Headphones', url: '/src/assets/images/prod_wireless_headphones_1795321793763.jpg' },
@@ -67,6 +70,40 @@ const STUDIO_IMAGE_PRESETS: Array<{ label: string; url: string }> = [
   { label: 'Brass Home Decor Lamp', url: '/src/assets/images/prod_decor_brass_lamp_1795321794677.jpg' },
   { label: 'Fitness Dumbbells', url: '/src/assets/images/prod_fitness_dumbbells_1795321796300.jpg' },
 ];
+
+const HERO_BANNER_PRESETS: Array<{ label: string; url: string }> = [
+  { label: 'Hero: Flagship Electronics & Audio', url: '/src/assets/images/hero_aagaman_electronics_1795321794113.jpg' },
+  { label: 'Hero: Modern Home & Kitchen', url: '/src/assets/images/hero_aagaman_home_1795321794314.jpg' },
+  ...STUDIO_IMAGE_PRESETS,
+];
+
+function readCompressedBannerImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const img = new Image();
+      img.onerror = () => resolve(dataUrl);
+      img.onload = () => {
+        const maxWidth = 1440;
+        const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 interface AdminProductImage {
   id: number;
@@ -1749,6 +1786,270 @@ export const AdminPage: React.FC = () => {
                       </p>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            {/* Homepage Hero Banners Manager */}
+            <div className="lg:col-span-12 bg-white border border-slate-200 rounded-xl p-6 space-y-5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+                <div>
+                  <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-[#EA580C]" /> Homepage Hero Banners ({(settingsForm.banners || []).length})
+                  </h3>
+                  <p className="text-slate-500 mt-0.5">
+                    Edit the hero carousel slides shown at the top of the storefront — headline, offer badge, subtitle, button link, and background image.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextBanner: BannerItem = {
+                        id: `banner-${Date.now()}`,
+                        kicker: 'Featured Offer',
+                        title: 'New Season Collection',
+                        subtitle: 'Discover verified Indian brands, fast delivery, and instant Razorpay & UPI checkout.',
+                        ctaLabel: 'Shop Now',
+                        categorySlug: adminCategories[0]?.slug || 'all',
+                        imageUrl: HERO_BANNER_PRESETS[0].url,
+                      };
+                      setSettingsForm({
+                        ...settingsForm,
+                        banners: [...(settingsForm.banners || []), nextBanner],
+                      });
+                    }}
+                    className="px-3.5 h-9 rounded-lg border border-slate-300 hover:bg-slate-50 text-[#0B1F3A] font-semibold flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" /> Add Banner Slide
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (isStaticToken(adminToken)) {
+                        updateStaticAdminSettings(settingsForm);
+                        await refreshStoreMeta();
+                        notify('Homepage hero banners updated!', 'success');
+                        return;
+                      }
+                      const res = await fetch('/api/admin/settings', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                        body: JSON.stringify({ config: settingsForm }),
+                      });
+                      if (res.ok) {
+                        await refreshStoreMeta();
+                        notify('Homepage hero banners updated!', 'success');
+                      } else {
+                        notify('Failed to save hero banners.', 'error');
+                      }
+                    }}
+                    className="px-4 h-9 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold"
+                  >
+                    Save Hero Banners
+                  </button>
+                </div>
+              </div>
+
+              {(settingsForm.banners || []).length === 0 ? (
+                <div className="p-6 rounded-xl border border-dashed border-slate-300 text-center text-slate-500 space-y-2">
+                  <p>No hero banners configured. Click &ldquo;Add Banner Slide&rdquo; to create your first storefront banner.</p>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {(settingsForm.banners || []).map((banner, idx) => {
+                    const updateBannerAt = (patch: Partial<BannerItem>) => {
+                      const next = [...(settingsForm.banners || [])];
+                      next[idx] = { ...next[idx], ...patch };
+                      setSettingsForm({ ...settingsForm, banners: next });
+                    };
+                    const moveBanner = (dir: -1 | 1) => {
+                      const next = [...(settingsForm.banners || [])];
+                      const target = idx + dir;
+                      if (target < 0 || target >= next.length) return;
+                      [next[idx], next[target]] = [next[target], next[idx]];
+                      setSettingsForm({ ...settingsForm, banners: next });
+                    };
+                    const removeBanner = () => {
+                      const next = (settingsForm.banners || []).filter((_, i) => i !== idx);
+                      setSettingsForm({ ...settingsForm, banners: next });
+                    };
+
+                    return (
+                      <div
+                        key={banner.id || idx}
+                        className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50"
+                      >
+                        <div className="px-4 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between gap-2">
+                          <span className="font-bold text-[#0B1F3A]">
+                            Slide #{idx + 1} · {banner.kicker || 'Untitled Banner'}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => moveBanner(-1)}
+                              title="Move Up"
+                              className="p-1.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === (settingsForm.banners || []).length - 1}
+                              onClick={() => moveBanner(1)}
+                              title="Move Down"
+                              className="p-1.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={removeBanner}
+                              title="Delete Slide"
+                              className="px-2.5 py-1 rounded border border-red-200 bg-white text-red-600 hover:bg-red-50 font-semibold flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="p-4 grid lg:grid-cols-12 gap-4 items-start">
+                          {/* Live Mini Preview */}
+                          <div className="lg:col-span-5 relative rounded-xl overflow-hidden bg-[#0B1F3A] text-white min-h-[190px] flex items-center border border-slate-200">
+                            {banner.imageUrl && (
+                              <img
+                                src={resolveAssetUrl(banner.imageUrl)}
+                                alt={banner.title}
+                                referrerPolicy="no-referrer"
+                                className="absolute inset-0 w-full h-full object-cover"
+                              />
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-r from-[#0B1F3A]/95 via-[#0B1F3A]/75 to-[#0B1F3A]/25" />
+                            <div className="relative z-10 p-5 space-y-2 max-w-sm">
+                              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#FDBA74]">
+                                {banner.kicker || 'OFFER TAG'}
+                              </p>
+                              <p className="font-display text-lg font-bold leading-snug">
+                                {banner.title || 'Banner Headline'}
+                              </p>
+                              <p className="text-[11px] text-slate-200 line-clamp-2">
+                                {banner.subtitle || 'Banner description text'}
+                              </p>
+                              <span className="inline-block mt-1 px-3 py-1.5 rounded-md bg-[#EA580C] text-white text-[11px] font-semibold">
+                                {banner.ctaLabel || 'Shop Now'} →
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Editable Fields */}
+                          <div className="lg:col-span-7 grid sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-slate-500 mb-1">Top Badge / Kicker</label>
+                              <input
+                                value={banner.kicker}
+                                onChange={(e) => updateBannerAt({ kicker: e.target.value })}
+                                placeholder="Grand Aagaman Sale"
+                                className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-slate-500 mb-1">Button Label (CTA)</label>
+                              <input
+                                value={banner.ctaLabel}
+                                onChange={(e) => updateBannerAt({ ctaLabel: e.target.value })}
+                                placeholder="Shop Electronics"
+                                className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="block text-slate-500 mb-1">Main Headline</label>
+                              <input
+                                value={banner.title}
+                                onChange={(e) => updateBannerAt({ title: e.target.value })}
+                                placeholder="Flagship Tech & Audio Built to Move You Forward"
+                                className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="block text-slate-500 mb-1">Subtitle / Description</label>
+                              <textarea
+                                rows={2}
+                                value={banner.subtitle}
+                                onChange={(e) => updateBannerAt({ subtitle: e.target.value })}
+                                placeholder="Up to 42% off..."
+                                className="w-full p-2.5 rounded-lg border border-slate-300 bg-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-slate-500 mb-1">Button Target Category</label>
+                              <select
+                                value={banner.categorySlug}
+                                onChange={(e) => updateBannerAt({ categorySlug: e.target.value })}
+                                className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                              >
+                                <option value="all">All Products (/shop)</option>
+                                {adminCategories.map((c) => (
+                                  <option key={c.id} value={c.slug}>
+                                    {c.name} (/category/{c.slug})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-slate-500 mb-1">Preset Banner Image</label>
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  if (e.target.value) updateBannerAt({ imageUrl: e.target.value });
+                                }}
+                                className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                              >
+                                <option value="">Choose a built-in image...</option>
+                                {HERO_BANNER_PRESETS.map((preset) => (
+                                  <option key={preset.url} value={preset.url}>
+                                    {preset.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="block text-slate-500 mb-1">Banner Image URL or Upload</label>
+                              <div className="flex flex-wrap sm:flex-nowrap gap-2">
+                                <input
+                                  value={banner.imageUrl}
+                                  onChange={(e) => updateBannerAt({ imageUrl: e.target.value })}
+                                  placeholder="https://... or /src/assets/images/..."
+                                  className="flex-1 h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono text-[11px]"
+                                />
+                                <label className="px-3 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-[#0B1F3A] font-semibold flex items-center gap-1.5 cursor-pointer shrink-0">
+                                  <Upload className="w-3.5 h-3.5 text-[#EA580C]" />
+                                  <span>Upload Image</span>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={async (e) => {
+                                      const file = e.target.files?.[0];
+                                      e.target.value = '';
+                                      if (!file) return;
+                                      try {
+                                        const compressed = await readCompressedBannerImage(file);
+                                        updateBannerAt({ imageUrl: compressed });
+                                        notify('Banner image loaded! Click Save Hero Banners to apply.', 'info');
+                                      } catch {
+                                        notify('Unable to load selected image file.', 'error');
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
