@@ -24,12 +24,14 @@ export const AuthModal: React.FC = () => {
   const [resetStep, setResetStep] = useState<'request' | 'confirm'>('request');
   const [sandboxResetHint, setSandboxResetHint] = useState('');
   const [error, setError] = useState('');
+  const [googleError, setGoogleError] = useState('');
   const [loading, setLoading] = useState(false);
 
   if (!isAuthModalOpen) return null;
 
   const handleGoogleSignIn = async () => {
     setError('');
+    setGoogleError('');
     setLoading(true);
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
@@ -69,15 +71,15 @@ export const AuthModal: React.FC = () => {
       const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
       if (msg.includes('unauthorized-domain')) {
         const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
-        setError(
-          `Google Sign-In needs "${host}" added under Firebase Console → Auth → Authorized domains. You can register/sign in with Email right below.`
+        setGoogleError(
+          `Google Sign-In requires "${host}" to be added in Firebase Console → Authentication → Settings → Authorized domains. Use the email form below in the meantime.`
         );
       } else if (msg.includes('popup-blocked')) {
-        setError('Google Sign-In popup was blocked by the browser. Allow popups or use Email Register/Sign In below.');
+        setGoogleError('Google Sign-In popup was blocked by your browser. Allow popups or use the email form below.');
       } else if (msg.includes('popup-closed-by-user')) {
-        setError('Google Sign-In was closed before completing. Please try again or use Email below.');
+        setGoogleError('Google Sign-In was closed before completing. Try again or use the email form below.');
       } else {
-        setError(msg);
+        setGoogleError(msg);
       }
     } finally {
       setLoading(false);
@@ -87,6 +89,7 @@ export const AuthModal: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setGoogleError('');
     setLoading(true);
     try {
       if (mode === 'login') {
@@ -243,6 +246,24 @@ export const AuthModal: React.FC = () => {
                 <span>Continue with Google</span>
               </button>
 
+              {googleError && (
+                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 space-y-1">
+                  <p className="font-medium">{googleError}</p>
+                  {mode === 'login' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('register');
+                        setError('');
+                      }}
+                      className="font-semibold text-[#EA580C] hover:underline"
+                    >
+                      Register with Email &amp; +91 Mobile below →
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center gap-3 text-xs text-slate-400">
                 <div className="flex-1 h-px bg-slate-200" />
                 <span>or with email</span>
@@ -333,23 +354,7 @@ export const AuthModal: React.FC = () => {
               </div>
             )}
 
-            {error && (
-              <div className="space-y-1.5">
-                <p className="text-xs text-red-600 font-medium">{error}</p>
-                {mode === 'login' && (error.includes('Authorized domains') || error.includes('popup')) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode('register');
-                      setError('');
-                    }}
-                    className="text-xs font-semibold text-[#EA580C] hover:underline"
-                  >
-                    Create Account with Email & Mobile (+91) instead →
-                  </button>
-                )}
-              </div>
-            )}
+            {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
 
             <button
               type="submit"
@@ -376,6 +381,7 @@ export const AuthModal: React.FC = () => {
                   onClick={() => {
                     setMode('forgot');
                     setError('');
+                    setGoogleError('');
                   }}
                   className="hover:text-[#EA580C] font-medium"
                 >
@@ -386,6 +392,7 @@ export const AuthModal: React.FC = () => {
                   onClick={() => {
                     setMode('register');
                     setError('');
+                    setGoogleError('');
                   }}
                   className="text-[#0B1F3A] font-semibold hover:text-[#EA580C]"
                 >
@@ -398,6 +405,7 @@ export const AuthModal: React.FC = () => {
                 onClick={() => {
                   setMode('login');
                   setError('');
+                  setGoogleError('');
                 }}
                 className="text-[#0B1F3A] font-semibold hover:text-[#EA580C]"
               >
