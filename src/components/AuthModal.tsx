@@ -67,11 +67,18 @@ export const AuthModal: React.FC = () => {
       notify(`Welcome back, ${staticSession.user.name}!`, 'success');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
-      setError(
-        msg.includes('unauthorized-domain')
-          ? 'Google Sign-In domain not whitelisted in Firebase yet — please register or sign in with email below.'
-          : msg
-      );
+      if (msg.includes('unauthorized-domain')) {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+        setError(
+          `Google Sign-In needs "${host}" added under Firebase Console → Auth → Authorized domains. You can register/sign in with Email right below.`
+        );
+      } else if (msg.includes('popup-blocked')) {
+        setError('Google Sign-In popup was blocked by the browser. Allow popups or use Email Register/Sign In below.');
+      } else if (msg.includes('popup-closed-by-user')) {
+        setError('Google Sign-In was closed before completing. Please try again or use Email below.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -128,7 +135,12 @@ export const AuthModal: React.FC = () => {
             return;
           }
         } catch (err) {
-          if (err instanceof Error && (err.message.includes('exists') || err.message.includes('Registration') || err.message.includes('Password'))) {
+          if (
+            err instanceof Error &&
+            (err.message.toLowerCase().includes('exists') ||
+              err.message.toLowerCase().includes('registration') ||
+              err.message.toLowerCase().includes('password'))
+          ) {
             throw err;
           }
         }
@@ -321,7 +333,23 @@ export const AuthModal: React.FC = () => {
               </div>
             )}
 
-            {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
+            {error && (
+              <div className="space-y-1.5">
+                <p className="text-xs text-red-600 font-medium">{error}</p>
+                {mode === 'login' && (error.includes('Authorized domains') || error.includes('popup')) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('register');
+                      setError('');
+                    }}
+                    className="text-xs font-semibold text-[#EA580C] hover:underline"
+                  >
+                    Create Account with Email & Mobile (+91) instead →
+                  </button>
+                )}
+              </div>
+            )}
 
             <button
               type="submit"
