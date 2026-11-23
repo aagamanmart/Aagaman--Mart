@@ -5,13 +5,18 @@ import {
   BarChart3,
   CheckCircle2,
   CreditCard,
+  Eye,
   FolderTree,
   Image as ImageIcon,
   LayoutDashboard,
   LogOut,
+  Mail,
+  MapPin,
+  Megaphone,
   MessageSquare,
   Package,
   Pencil,
+  Phone,
   Plus,
   Search,
   Settings,
@@ -56,7 +61,7 @@ import {
   updateStaticAdminTicketStatus,
   verifyStaticAdminLogin,
 } from '../lib/static-store';
-import type { BannerItem, OrderRecord, StoreConfig } from '../types';
+import type { Address, BannerItem, OrderRecord, StoreConfig } from '../types';
 
 const STUDIO_IMAGE_PRESETS: Array<{ label: string; url: string }> = [
   { label: 'Wireless Headphones', url: '/src/assets/images/prod_wireless_headphones_1795321793763.jpg' },
@@ -217,17 +222,29 @@ export const AdminPage: React.FC = () => {
   const [adminReturns, setAdminReturns] = useState<
     Array<{ id: number; orderId: number; reason: string; requestType: string; status: string; createdAt: string }>
   >([]);
-  const [adminCustomers, setAdminCustomers] = useState<
-    Array<{
-      id: number;
-      name: string;
-      email: string;
-      phone: string;
-      isBlocked: boolean;
-      orderCount: number;
-      totalSpent: number;
-    }>
-  >([]);
+  interface AdminCustomerItem {
+    id: number;
+    name: string;
+    email: string;
+    phone: string;
+    photoUrl?: string;
+    authMethod?: string;
+    emailVerified?: boolean;
+    phoneVerified?: boolean;
+    isBlocked: boolean;
+    createdAt?: string | null;
+    lastLoginAt?: string | null;
+    addresses?: Address[];
+    wishlistCount?: number;
+    orderCount: number;
+    totalSpent: number;
+    recentOrders?: Array<{ orderNumber: string; status: string; grandTotal: number; createdAt: string }>;
+  }
+
+  const [adminCustomers, setAdminCustomers] = useState<AdminCustomerItem[]>([]);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerFilter, setCustomerFilter] = useState<'all' | 'email' | 'google' | 'blocked'>('all');
+  const [selectedCustomer, setSelectedCustomer] = useState<AdminCustomerItem | null>(null);
   const [adminPayments, setAdminPayments] = useState<
     Array<{
       id: number;
@@ -418,6 +435,12 @@ export const AdminPage: React.FC = () => {
     if (isJsonApiResponse(tickRes)) setAdminTickets((await tickRes.json()).tickets || []);
   }, []);
 
+  useEffect(() => {
+    if (adminToken && (tab === 'customers' || tab === 'overview' || tab === 'orders')) {
+      loadAllAdminData(adminToken);
+    }
+  }, [tab, adminToken, loadAllAdminData]);
+
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -578,6 +601,110 @@ export const AdminPage: React.FC = () => {
   ];
 
   const maxChartRev = Math.max(1, ...(dashboard?.salesChart.map((d) => d.revenue) || [1]));
+
+  const renderAnnouncementBarEditor = () => (
+    <div className="lg:col-span-12 bg-white border border-slate-200 rounded-xl p-6 space-y-4 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+        <div>
+          <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+            <Megaphone className="w-4 h-4 text-[#EA580C]" /> Top Announcement Bar &amp; Sale Strip
+          </h3>
+          <p className="text-slate-500 mt-0.5">
+            Control the orange bar at the very top of the website (&ldquo;Grand Aagaman Sale Live...&rdquo;) and the Deals section headline.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={async () => {
+            if (isStaticToken(adminToken)) {
+              updateStaticAdminSettings(settingsForm);
+              await refreshStoreMeta();
+              notify('Top announcement bar updated!', 'success');
+              return;
+            }
+            const res = await fetch('/api/admin/settings', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+              body: JSON.stringify({ config: settingsForm }),
+            });
+            if (res.ok) {
+              await refreshStoreMeta();
+              notify('Top announcement bar updated!', 'success');
+            } else {
+              notify('Failed to update top announcement bar.', 'error');
+            }
+          }}
+          className="px-4 h-9 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold"
+        >
+          Save Top Bar
+        </button>
+      </div>
+
+      {/* Live Preview */}
+      <div className="rounded-lg overflow-hidden border border-slate-200">
+        <div className="px-3 py-1 bg-slate-100 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          Live Header Strip Preview {settingsForm.announcementEnabled === false ? '(Hidden on Storefront)' : '(Visible on Storefront)'}
+        </div>
+        {settingsForm.announcementEnabled === false ? (
+          <div className="px-4 py-2 bg-slate-50 text-slate-400 text-center italic">
+            Top announcement bar is currently turned OFF.
+          </div>
+        ) : (
+          <div className="bg-[#EA580C] text-white text-xs font-medium px-4 py-1.5 text-center truncate">
+            {settingsForm.announcementText?.trim() || 'Enter announcement text below...'}
+          </div>
+        )}
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div className="sm:col-span-2 flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
+          <div>
+            <p className="font-semibold text-[#0B1F3A]">Show Top Announcement Bar on Website</p>
+            <p className="text-slate-500 text-[11px]">Turn off to hide the orange promo strip above the header.</p>
+          </div>
+          <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-[#0B1F3A]">
+            <input
+              type="checkbox"
+              checked={settingsForm.announcementEnabled !== false}
+              onChange={(e) => setSettingsForm({ ...settingsForm, announcementEnabled: e.target.checked })}
+              className="w-4 h-4 accent-[#EA580C]"
+            />
+            <span>{settingsForm.announcementEnabled !== false ? 'Visible' : 'Hidden'}</span>
+          </label>
+        </div>
+
+        <div className="sm:col-span-2">
+          <label className="block text-slate-500 mb-1">Top Announcement Bar Text</label>
+          <input
+            value={settingsForm.announcementText || ''}
+            onChange={(e) => setSettingsForm({ ...settingsForm, announcementText: e.target.value })}
+            placeholder="Grand Aagaman Sale Live — Free Shipping above ₹999 · Use code AAGAMAN10 for 10% off"
+            className="w-full h-9 px-3 rounded-lg border border-slate-300"
+          />
+        </div>
+
+        <div>
+          <label className="block text-slate-500 mb-1">Sale Section Kicker Title</label>
+          <input
+            value={settingsForm.flashSaleTitle || ''}
+            onChange={(e) => setSettingsForm({ ...settingsForm, flashSaleTitle: e.target.value })}
+            placeholder="Grand Aagaman Sale"
+            className="w-full h-9 px-3 rounded-lg border border-slate-300"
+          />
+        </div>
+
+        <div>
+          <label className="block text-slate-500 mb-1">Sale Section Subtitle</label>
+          <input
+            value={settingsForm.flashSaleSubtitle || ''}
+            onChange={(e) => setSettingsForm({ ...settingsForm, flashSaleSubtitle: e.target.value })}
+            placeholder="Curated flagship deals across Electronics, Home & Lifestyle..."
+            className="w-full h-9 px-3 rounded-lg border border-slate-300"
+          />
+        </div>
+      </div>
+    </div>
+  );
 
   const renderHeroBannersEditor = () => (
     <div className="lg:col-span-12 bg-white border border-slate-200 rounded-xl p-6 space-y-5 text-xs">
@@ -1635,58 +1762,186 @@ export const AdminPage: React.FC = () => {
         )}
 
         {/* CUSTOMERS */}
-        {tab === 'customers' && (
-          <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                <tr>
-                  <th className="py-3 px-4">Customer</th>
-                  <th className="py-3 px-4">Phone</th>
-                  <th className="py-3 px-4 text-right">Orders</th>
-                  <th className="py-3 px-4 text-right">Total Spend</th>
-                  <th className="py-3 px-4 text-right">Status / Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {adminCustomers.map((c) => (
-                  <tr key={c.id}>
-                    <td className="py-3 px-4">
-                      <p className="font-semibold text-[#0B1F3A]">{c.name}</p>
-                      <p className="text-slate-500">{c.email}</p>
-                    </td>
-                    <td className="py-3 px-4 font-mono">{c.phone || '—'}</td>
-                    <td className="py-3 px-4 text-right font-mono tabular-nums">{c.orderCount}</td>
-                    <td className="py-3 px-4 text-right font-mono font-bold tabular-nums">
-                      {formatINR(c.totalSpent)}
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (isStaticToken(adminToken)) {
-                            toggleStaticAdminCustomerBlock(c.id, !c.isBlocked);
-                          } else {
-                            await fetch(`/api/admin/customers/${c.id}/block`, {
-                              method: 'PATCH',
-                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-                              body: JSON.stringify({ isBlocked: !c.isBlocked }),
-                            });
-                          }
-                          loadAllAdminData(adminToken);
-                        }}
-                        className={`px-3 py-1 rounded font-semibold ${
-                          c.isBlocked ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'
-                        }`}
-                      >
-                        {c.isBlocked ? 'Blocked (Unblock)' : 'Active (Block)'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {tab === 'customers' && (() => {
+          const filteredCustomers = adminCustomers.filter((c) => {
+            if (customerFilter === 'email' && c.authMethod !== 'email') return false;
+            if (customerFilter === 'google' && c.authMethod !== 'google') return false;
+            if (customerFilter === 'blocked' && !c.isBlocked) return false;
+            const q = customerSearch.trim().toLowerCase();
+            if (!q) return true;
+            return (
+              c.name.toLowerCase().includes(q) ||
+              c.email.toLowerCase().includes(q) ||
+              (c.phone || '').toLowerCase().includes(q)
+            );
+          });
+
+          return (
+            <div className="space-y-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      value={customerSearch}
+                      onChange={(e) => setCustomerSearch(e.target.value)}
+                      placeholder="Search name, email, or phone..."
+                      className="h-9 pl-9 pr-3 w-64 rounded-lg border border-slate-300 text-xs"
+                    />
+                  </div>
+                  <select
+                    value={customerFilter}
+                    onChange={(e) => setCustomerFilter(e.target.value as 'all' | 'email' | 'google' | 'blocked')}
+                    className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-700"
+                  >
+                    <option value="all">All Registered ({adminCustomers.length})</option>
+                    <option value="email">
+                      Email Sign-Up ({adminCustomers.filter((c) => c.authMethod !== 'google').length})
+                    </option>
+                    <option value="google">
+                      Google Sign-In ({adminCustomers.filter((c) => c.authMethod === 'google').length})
+                    </option>
+                    <option value="blocked">
+                      Blocked ({adminCustomers.filter((c) => c.isBlocked).length})
+                    </option>
+                  </select>
+                </div>
+                <p className="text-slate-500">
+                  Total Registered Accounts: <strong className="text-[#0B1F3A]">{adminCustomers.length}</strong>
+                </p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
+                {filteredCustomers.length === 0 ? (
+                  <div className="p-10 text-center text-xs text-slate-500 space-y-1">
+                    <p className="font-semibold text-[#0B1F3A]">No registered customers found</p>
+                    <p>When customers register or sign in via Email or Google from the storefront Sign In button, their full profile details will appear here.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <tr>
+                        <th className="py-3 px-4">Customer &amp; Sign-In Method</th>
+                        <th className="py-3 px-4">Mobile Number</th>
+                        <th className="py-3 px-4">Registered / Last Sign-In</th>
+                        <th className="py-3 px-4 text-right">Orders &amp; Addresses</th>
+                        <th className="py-3 px-4 text-right">Total Spend</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredCustomers.map((c) => (
+                        <tr key={c.id} className="hover:bg-slate-50/70">
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2.5">
+                              {c.photoUrl ? (
+                                <img
+                                  src={c.photoUrl}
+                                  alt={c.name}
+                                  referrerPolicy="no-referrer"
+                                  className="w-8 h-8 rounded-full object-cover border border-slate-200 shrink-0"
+                                />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-[#0B1F3A] text-white font-bold flex items-center justify-center shrink-0">
+                                  {(c.name || c.email || 'C').charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <div>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <p className="font-semibold text-[#0B1F3A]">{c.name}</p>
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                      c.authMethod === 'google'
+                                        ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                        : 'bg-slate-100 text-slate-700'
+                                    }`}
+                                  >
+                                    {c.authMethod === 'google' ? 'Google' : 'Email'}
+                                  </span>
+                                  {c.emailVerified && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700">
+                                      Verified
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-500">{c.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 font-mono">
+                            <div>{c.phone || '—'}</div>
+                            {c.phoneVerified && (
+                              <span className="text-[10px] text-emerald-700 font-sans font-semibold">OTP Verified</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-slate-600">
+                            <p>
+                              Joined:{' '}
+                              <span className="font-mono">
+                                {c.createdAt ? new Date(c.createdAt).toLocaleDateString('en-IN') : '—'}
+                              </span>
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              Last sign-in:{' '}
+                              {c.lastLoginAt
+                                ? new Date(c.lastLoginAt).toLocaleString('en-IN', {
+                                    day: '2-digit',
+                                    month: 'short',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : '—'}
+                            </p>
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums">
+                            <p>{c.orderCount} orders</p>
+                            <p className="text-[11px] text-slate-400">
+                              {(c.addresses || []).length} saved addr
+                            </p>
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono font-bold tabular-nums">
+                            {formatINR(c.totalSpent)}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedCustomer(c)}
+                                className="px-2.5 py-1 rounded border border-slate-200 hover:border-[#0B1F3A] text-[#0B1F3A] font-semibold inline-flex items-center gap-1"
+                              >
+                                <Eye className="w-3.5 h-3.5" /> Details
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (isStaticToken(adminToken)) {
+                                    toggleStaticAdminCustomerBlock(c.id, !c.isBlocked);
+                                  } else {
+                                    await fetch(`/api/admin/customers/${c.id}/block`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                                      body: JSON.stringify({ isBlocked: !c.isBlocked }),
+                                    });
+                                  }
+                                  loadAllAdminData(adminToken);
+                                }}
+                                className={`px-2.5 py-1 rounded font-semibold ${
+                                  c.isBlocked ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                {c.isBlocked ? 'Unblock' : 'Block'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* PAYMENTS */}
         {tab === 'payments' && (
@@ -1744,6 +1999,7 @@ export const AdminPage: React.FC = () => {
         {/* MARKETING & COUPONS & BANNERS */}
         {tab === 'marketing' && (
           <div className="grid lg:grid-cols-12 gap-6">
+            {renderAnnouncementBarEditor()}
             {renderHeroBannersEditor()}
 
             <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
@@ -1938,8 +2194,19 @@ export const AdminPage: React.FC = () => {
                     className="w-full h-9 px-3 rounded-lg border border-slate-300"
                   />
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-slate-500 mb-1">Announcement Banner</label>
+                <div className="sm:col-span-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="block text-slate-500">Top Announcement Bar (&ldquo;Grand Aagaman Sale Live...&rdquo;)</label>
+                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0B1F3A] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settingsForm.announcementEnabled !== false}
+                        onChange={(e) => setSettingsForm({ ...settingsForm, announcementEnabled: e.target.checked })}
+                        className="accent-[#EA580C]"
+                      />
+                      <span>Show on Website</span>
+                    </label>
+                  </div>
                   <input
                     value={settingsForm.announcementText || ''}
                     onChange={(e) => setSettingsForm({ ...settingsForm, announcementText: e.target.value })}
@@ -2393,6 +2660,136 @@ export const AdminPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {selectedCustomer && (
+        <div className="fixed inset-0 z-50 bg-slate-950/55 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-2xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden text-xs">
+            <div className="px-6 py-4 bg-[#0B1F3A] text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {selectedCustomer.photoUrl ? (
+                  <img
+                    src={selectedCustomer.photoUrl}
+                    alt={selectedCustomer.name}
+                    referrerPolicy="no-referrer"
+                    className="w-10 h-10 rounded-full object-cover border border-white/20"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-[#EA580C] text-white font-bold text-sm flex items-center justify-center">
+                    {(selectedCustomer.name || selectedCustomer.email || 'C').charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div>
+                  <h3 className="font-display text-base font-bold">{selectedCustomer.name}</h3>
+                  <p className="text-[11px] text-slate-300">
+                    Customer ID #{selectedCustomer.id} ·{' '}
+                    {selectedCustomer.authMethod === 'google' ? 'Google Sign-In' : 'Email Registration'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedCustomer(null)}
+                className="p-1.5 rounded-lg hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5">
+              <div className="grid sm:grid-cols-2 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-4">
+                <p className="flex items-center gap-2 text-slate-700">
+                  <Mail className="w-4 h-4 text-[#EA580C] shrink-0" />
+                  <span>
+                    <strong className="text-[#0B1F3A]">Email:</strong> {selectedCustomer.email}
+                  </span>
+                </p>
+                <p className="flex items-center gap-2 text-slate-700">
+                  <Phone className="w-4 h-4 text-[#EA580C] shrink-0" />
+                  <span>
+                    <strong className="text-[#0B1F3A]">Mobile:</strong> {selectedCustomer.phone || 'Not provided'}
+                  </span>
+                </p>
+                <p className="text-slate-600">
+                  <strong className="text-[#0B1F3A]">Registered On:</strong>{' '}
+                  {selectedCustomer.createdAt
+                    ? new Date(selectedCustomer.createdAt).toLocaleString('en-IN')
+                    : 'Not recorded'}
+                </p>
+                <p className="text-slate-600">
+                  <strong className="text-[#0B1F3A]">Last Sign-In:</strong>{' '}
+                  {selectedCustomer.lastLoginAt
+                    ? new Date(selectedCustomer.lastLoginAt).toLocaleString('en-IN')
+                    : 'Not recorded'}
+                </p>
+                <p className="text-slate-600">
+                  <strong className="text-[#0B1F3A]">Verification:</strong>{' '}
+                  {selectedCustomer.emailVerified ? 'Email Verified' : 'Email Unverified'} ·{' '}
+                  {selectedCustomer.phoneVerified ? 'Mobile OTP Verified' : 'Mobile Unverified'}
+                </p>
+                <p className="text-slate-600">
+                  <strong className="text-[#0B1F3A]">Account Status:</strong>{' '}
+                  <span className={selectedCustomer.isBlocked ? 'text-red-600 font-bold' : 'text-emerald-700 font-bold'}>
+                    {selectedCustomer.isBlocked ? 'Blocked' : 'Active'}
+                  </span>
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <h4 className="font-display text-sm font-bold text-[#0B1F3A] flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-[#EA580C]" /> Saved Delivery Addresses ({(selectedCustomer.addresses || []).length})
+                </h4>
+                {(selectedCustomer.addresses || []).length === 0 ? (
+                  <p className="text-slate-500">No saved delivery addresses yet.</p>
+                ) : (
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {(selectedCustomer.addresses || []).map((a) => (
+                      <div key={a.id} className="p-3 rounded-lg border border-slate-200 bg-white space-y-0.5">
+                        <p className="font-bold text-[#0B1F3A]">
+                          {a.fullName} · {a.addressType}
+                        </p>
+                        <p className="text-slate-600">{a.line1}</p>
+                        <p className="text-slate-600">
+                          {a.city}, {a.state} - <span className="font-mono">{a.pincode}</span>
+                        </p>
+                        <p className="text-slate-500 font-mono">{a.phone}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <h4 className="font-display text-sm font-bold text-[#0B1F3A] flex items-center gap-1.5">
+                  <ShoppingBag className="w-4 h-4 text-[#EA580C]" /> Order Summary ({selectedCustomer.orderCount} orders ·{' '}
+                  {formatINR(selectedCustomer.totalSpent)})
+                </h4>
+                {(selectedCustomer.recentOrders || []).length === 0 ? (
+                  <p className="text-slate-500">No orders placed yet.</p>
+                ) : (
+                  <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {(selectedCustomer.recentOrders || []).map((o) => (
+                      <div key={o.orderNumber} className="px-3 py-2 flex items-center justify-between">
+                        <div>
+                          <span className="font-mono font-bold text-[#0B1F3A]">{o.orderNumber}</span>
+                          <span className="text-slate-400 ml-2">
+                            {new Date(o.createdAt).toLocaleDateString('en-IN')}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">
+                            {o.status}
+                          </span>
+                          <span className="font-mono font-bold text-[#0B1F3A]">{formatINR(o.grandTotal)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

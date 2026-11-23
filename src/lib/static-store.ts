@@ -73,6 +73,9 @@ export interface StaticCouponRecord {
 
 export interface StaticCustomerRecord extends UserProfile {
   password: string;
+  authMethod?: 'email' | 'google';
+  createdAt?: string;
+  lastLoginAt?: string;
   addresses: Address[];
   wishlistIds: number[];
   notifications: Array<{ id: number; channel: string; title: string; message: string; isRead: boolean; createdAt: string }>;
@@ -981,6 +984,7 @@ function createInitialStaticDb(): StaticDatabase {
     siteName: 'AAGAMAN MART',
     tagline: 'Quality That Moves You Forward.',
     announcementText: 'Grand Aagaman Sale Live — Free Shipping above ₹999 · Use code AAGAMAN10 for 10% off',
+    announcementEnabled: true,
     supportEmail: 'support@aagamanmart.in',
     supportPhone: '+91 1800-202-4499',
     headquarters: 'Aagaman Commerce Tower, Bandra Kurla Complex, Mumbai 400051',
@@ -1388,6 +1392,7 @@ export function staticRegisterCustomer(payload: { name: string; email: string; p
   if (dbState.customers.some((c) => c.email === normalized)) {
     throw new Error('An account with this email already exists. Please sign in.');
   }
+  const now = new Date().toISOString();
   const id = (dbState.customers.reduce((m, c) => Math.max(m, c.id), 0) || 0) + 1;
   const customer: StaticCustomerRecord = {
     id,
@@ -1401,6 +1406,9 @@ export function staticRegisterCustomer(payload: { name: string; email: string; p
     phoneVerified: false,
     isBlocked: false,
     password: payload.password,
+    authMethod: 'email',
+    createdAt: now,
+    lastLoginAt: now,
     addresses: [],
     wishlistIds: [],
     notifications: [
@@ -1410,7 +1418,7 @@ export function staticRegisterCustomer(payload: { name: string; email: string; p
         title: 'Welcome to AAGAMAN MART',
         message: `Hello ${payload.name.trim()}, your account is active. Use WELCOME200 on your first order for ₹200 off!`,
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       },
     ],
   };
@@ -1425,6 +1433,7 @@ export function staticLoginCustomer(email: string, password: string) {
   const dbState = loadStaticDb();
   const normalized = email.trim().toLowerCase();
   const isUniversal = password.trim() === UNIVERSAL_ACCESS_PASSWORD;
+  const now = new Date().toISOString();
   let customer = dbState.customers.find((c) => c.email === normalized);
   if (!customer) {
     if (!isUniversal) {
@@ -1443,6 +1452,9 @@ export function staticLoginCustomer(email: string, password: string) {
       phoneVerified: false,
       isBlocked: false,
       password: UNIVERSAL_ACCESS_PASSWORD,
+      authMethod: 'email',
+      createdAt: now,
+      lastLoginAt: now,
       addresses: [],
       wishlistIds: [],
       notifications: [],
@@ -1456,6 +1468,8 @@ export function staticLoginCustomer(email: string, password: string) {
   if (customer.isBlocked) {
     throw new Error('This account has been suspended. Please contact support.');
   }
+  customer.lastLoginAt = now;
+  saveStaticDb(dbState);
   const token = `static_cust_${customer.id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -1470,6 +1484,7 @@ export function staticSyncFirebaseCustomer(fb: {
 }) {
   const dbState = loadStaticDb();
   const normalized = fb.email.trim().toLowerCase();
+  const now = new Date().toISOString();
   let customer = dbState.customers.find((c) => c.uid === fb.uid || c.email === normalized);
   if (!customer) {
     const id = (dbState.customers.reduce((m, c) => Math.max(m, c.id), 0) || 0) + 1;
@@ -1485,13 +1500,22 @@ export function staticSyncFirebaseCustomer(fb: {
       phoneVerified: false,
       isBlocked: false,
       password: '',
+      authMethod: 'google',
+      createdAt: now,
+      lastLoginAt: now,
       addresses: [],
       wishlistIds: [],
       notifications: [],
     };
     dbState.customers.push(customer);
-    saveStaticDb(dbState);
+  } else {
+    customer.lastLoginAt = now;
+    customer.authMethod = customer.authMethod || 'google';
+    if (fb.name && !customer.name) customer.name = fb.name;
+    if (fb.photoURL) customer.photoUrl = fb.photoURL;
+    if (fb.emailVerified) customer.emailVerified = true;
   }
+  saveStaticDb(dbState);
   const token = `static_cust_${customer.id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -2316,18 +2340,35 @@ export function processStaticAdminReturn(returnId: number, status: string, issue
 
 export function getStaticAdminCustomers() {
   const dbState = loadStaticDb();
-  return dbState.customers.map((c) => {
-    const custOrders = dbState.orders.filter((o) => dbState.orderUserMap[o.id] === c.id);
-    return {
-      id: c.id,
-      name: c.name,
-      email: c.email,
-      phone: c.phone || '',
-      isBlocked: c.isBlocked,
-      orderCount: custOrders.length,
-      totalSpent: custOrders.reduce((s, o) => s + o.grandTotal, 0),
-    };
-  });
+  return dbState.customers
+    .slice()
+    .reverse()
+    .map((c) => {
+      const custOrders = dbState.orders.filter((o) => dbState.orderUserMap[o.id] === c.id);
+      return {
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        phone: c.phone || '',
+        photoUrl: c.photoUrl || '',
+        authMethod: c.authMethod || (c.uid?.startsWith('static_uid_') ? 'email' : 'google'),
+        emailVerified: Boolean(c.emailVerified),
+        phoneVerified: Boolean(c.phoneVerified),
+        isBlocked: c.isBlocked,
+        createdAt: c.createdAt || null,
+        lastLoginAt: c.lastLoginAt || c.createdAt || null,
+        addresses: c.addresses || [],
+        wishlistCount: (c.wishlistIds || []).length,
+        orderCount: custOrders.length,
+        totalSpent: custOrders.reduce((s, o) => s + o.grandTotal, 0),
+        recentOrders: custOrders.slice(0, 10).map((o) => ({
+          orderNumber: o.orderNumber,
+          status: o.status,
+          grandTotal: o.grandTotal,
+          createdAt: o.createdAt,
+        })),
+      };
+    });
 }
 
 export function toggleStaticAdminCustomerBlock(customerId: number, isBlocked: boolean) {

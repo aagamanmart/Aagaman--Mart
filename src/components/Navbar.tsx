@@ -122,22 +122,27 @@ export const Navbar: React.FC = () => {
   return (
     <header className="sticky top-0 z-40 w-full bg-[#0B1F3A] text-white shadow-sm">
       {/* Slim Dismissible Announcement Bar */}
-      {showAnnouncement && (
-        <div className="bg-[#EA580C] text-white text-xs font-medium px-4 py-1.5 flex items-center justify-between">
-          <div className="w-6 shrink-0" />
-          <p className="truncate text-center">
-            {config?.announcementText ||
-              'Grand Aagaman Sale Live — Free Shipping above ₹999 · Use code AAGAMAN10 for 10% off'}
-          </p>
-          <button
-            onClick={() => setShowAnnouncement(false)}
-            aria-label="Dismiss announcement"
-            className="p-0.5 hover:bg-white/20 rounded transition-colors shrink-0"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
+      {(() => {
+        const announcementMsg =
+          config?.announcementText !== undefined
+            ? config.announcementText.trim()
+            : 'Grand Aagaman Sale Live — Free Shipping above ₹999 · Use code AAGAMAN10 for 10% off';
+        const isEnabled = config?.announcementEnabled !== false && Boolean(announcementMsg);
+        if (!showAnnouncement || !isEnabled) return null;
+        return (
+          <div className="bg-[#EA580C] text-white text-xs font-medium px-4 py-1.5 flex items-center justify-between">
+            <div className="w-6 shrink-0" />
+            <p className="truncate text-center">{announcementMsg}</p>
+            <button
+              onClick={() => setShowAnnouncement(false)}
+              aria-label="Dismiss announcement"
+              className="p-0.5 hover:bg-white/20 rounded transition-colors shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Main Header Row */}
       <div className="max-w-[1440px] mx-auto px-4 lg:px-8 h-16 flex items-center justify-between gap-4 lg:gap-8">

@@ -205,6 +205,7 @@ export interface StoreConfig {
   siteName: string;
   tagline: string;
   announcementText: string;
+  announcementEnabled?: boolean;
   supportEmail: string;
   supportPhone: string;
   headquarters: string;

@@ -4,6 +4,7 @@ import { asc, count, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db/index.ts';
 import {
+  addresses,
   admins,
   categories,
   coupons,
@@ -623,8 +624,10 @@ adminRouter.patch('/admin/returns/:id', requireAdmin, async (req, res) => {
 
 // Admin Customers
 adminRouter.get('/admin/customers', requireAdmin, async (_req, res) => {
-  const [allUsers, orderAgg] = await Promise.all([
+  const [allUsers, allAddresses, allOrders, orderAgg] = await Promise.all([
     db.select().from(users).orderBy(desc(users.createdAt)),
+    db.select().from(addresses),
+    db.select().from(orders).orderBy(desc(orders.createdAt)),
     db
       .select({
         userId: orders.userId,
@@ -635,6 +638,21 @@ adminRouter.get('/admin/customers', requireAdmin, async (_req, res) => {
       .groupBy(orders.userId),
   ]);
   const aggMap = new Map(orderAgg.map((a) => [a.userId, a]));
+  const addrMap = new Map<number, typeof allAddresses>();
+  for (const a of allAddresses) {
+    const list = addrMap.get(a.userId) || [];
+    list.push(a);
+    addrMap.set(a.userId, list);
+  }
+  const orderMap = new Map<number, Array<{ orderNumber: string; status: string; grandTotal: number; createdAt: Date }>>();
+  for (const o of allOrders) {
+    if (!o.userId) continue;
+    const list = orderMap.get(o.userId) || [];
+    if (list.length < 10) {
+      list.push({ orderNumber: o.orderNumber, status: o.status, grandTotal: o.grandTotal, createdAt: o.createdAt });
+      orderMap.set(o.userId, list);
+    }
+  }
 
   res.json({
     customers: allUsers.map((u) => ({
@@ -642,12 +660,17 @@ adminRouter.get('/admin/customers', requireAdmin, async (_req, res) => {
       name: u.name,
       email: u.email,
       phone: u.phone,
+      photoUrl: u.photoUrl,
+      authMethod: u.passwordHash ? 'email' : 'google',
       emailVerified: u.emailVerified,
       phoneVerified: u.phoneVerified,
       isBlocked: u.isBlocked,
       createdAt: u.createdAt,
+      lastLoginAt: u.updatedAt,
+      addresses: addrMap.get(u.id) || [],
       orderCount: aggMap.get(u.id)?.orderCount || 0,
       totalSpent: aggMap.get(u.id)?.totalSpent || 0,
+      recentOrders: orderMap.get(u.id) || [],
     })),
   });
 });
