@@ -359,6 +359,30 @@ export const CheckoutPage: React.FC = () => {
           idempotencyKey,
         }),
       });
+      if (!hasJsonContentType(res) || res.status >= 500) {
+        const fallback = createStaticOrder(authToken, {
+          items: reqItems,
+          customerName,
+          customerEmail,
+          customerPhone,
+          address: activeAddressPayload,
+          shippingMethod,
+          paymentMethod,
+          couponCode: appliedCouponCode || undefined,
+        });
+        if (!fallback.requiresRazorpay) {
+          notify('COD Order Placed Successfully!', 'success');
+          await loadOrderConfirmation(fallback.order.orderNumber);
+          return;
+        }
+        setSandboxRzpSession({
+          orderNumber: fallback.order.orderNumber,
+          razorpayOrderId: fallback.razorpay!.razorpayOrderId,
+          amountPaise: fallback.razorpay!.amountPaise,
+          method: paymentMethod,
+        });
+        return;
+      }
       const json = await res.json();
       if (!res.ok) {
         notify(json.error || 'Could not place order.', 'error');

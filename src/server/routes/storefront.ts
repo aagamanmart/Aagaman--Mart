@@ -44,14 +44,16 @@ storefrontRouter.get('/store/config', async (_req, res) => {
       .where(eq(coupons.isActive, true))
       .limit(6);
 
-    const razorpayConfigured = Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+    const rzpKeyId = process.env.RAZORPAY_KEY_ID?.trim() || '';
+    const rzpKeySecret = process.env.RAZORPAY_KEY_SECRET?.trim() || '';
+    const razorpayConfigured = Boolean(rzpKeyId && rzpKeySecret);
 
     res.json({
       config: settingsRows[0]?.value || {},
       coupons: activeCoupons,
       payment: {
         mode: razorpayConfigured ? 'live' : 'sandbox',
-        razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
+        razorpayKeyId: rzpKeyId,
       },
     });
   } catch (error) {

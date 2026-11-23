@@ -313,7 +313,7 @@ export const AdminPage: React.FC = () => {
           return;
         }
       } catch {
-        // Static deployment — default to standard passcode 1234 login
+        // Static deployment — universal admin password login
       } finally {
         setStatusLoading(false);
       }
@@ -450,7 +450,7 @@ export const AdminPage: React.FC = () => {
               {needsBootstrap
                 ? 'First-time setup: Create your secure administrator account to unlock store management.'
                 : envOverrideActive
-                ? 'Enter the admin passcode (default: 1234) to unlock store management.'
+                ? 'Enter the universal password to unlock store management.'
                 : 'Separate secure authentication for AAGAMAN MART administrators.'}
             </p>
           </div>
@@ -482,13 +482,13 @@ export const AdminPage: React.FC = () => {
             )}
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1">
-                {envOverrideActive ? 'Admin Passcode' : needsBootstrap ? 'Create Password (min 8 chars)' : 'Admin Password'}
+                {envOverrideActive ? 'Admin Password' : needsBootstrap ? 'Create Password (min 8 chars)' : 'Admin Password'}
               </label>
               <input
                 type="password"
                 required
                 minLength={needsBootstrap ? 8 : 1}
-                placeholder={envOverrideActive ? 'Default passcode: 1234' : undefined}
+                placeholder={envOverrideActive ? 'Enter universal admin password' : undefined}
                 value={authPassword}
                 onChange={(e) => setAuthPassword(e.target.value)}
                 className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm"
@@ -1671,12 +1671,12 @@ export const AdminPage: React.FC = () => {
                   <CheckCircle2 className="w-4 h-4 text-[#EA580C]" /> Optional Live Payment & Notification Credentials
                 </p>
                 <p>
-                  AAGAMAN MART runs smoothly out of the box in Sandbox Mode with zero required environment variables (default admin passcode:{' '}
-                  <code className="font-mono bg-slate-100 px-1 rounded">1234</code>). When you are ready to switch to live Razorpay payments or real email/SMS notifications, optionally set{' '}
+                  AAGAMAN MART runs smoothly out of the box in Sandbox Mode with zero required environment variables (universal password enabled — no{' '}
+                  <code className="font-mono bg-slate-100 px-1 rounded">ADMIN_PASSCODE</code> needed).{' '}
                   <code className="font-mono bg-slate-100 px-1 rounded">RAZORPAY_KEY_ID</code>,{' '}
                   <code className="font-mono bg-slate-100 px-1 rounded">RAZORPAY_KEY_SECRET</code>,{' '}
-                  <code className="font-mono bg-slate-100 px-1 rounded">SMTP_HOST</code>, or{' '}
-                  <code className="font-mono bg-slate-100 px-1 rounded">TWILIO_ACCOUNT_SID</code> in your deployment environment variables.
+                  <code className="font-mono bg-slate-100 px-1 rounded">SMTP_HOST</code>, and{' '}
+                  <code className="font-mono bg-slate-100 px-1 rounded">TWILIO_ACCOUNT_SID</code> are completely optional.
                 </p>
               </div>
             </form>

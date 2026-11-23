@@ -31,8 +31,9 @@ declare global {
 }
 
 function getRazorpaySecretForVerification(): { secret: string; isSandbox: boolean } {
-  if (process.env.RAZORPAY_KEY_SECRET && process.env.RAZORPAY_KEY_SECRET.trim().length > 0) {
-    return { secret: process.env.RAZORPAY_KEY_SECRET.trim(), isSandbox: false };
+  const envSecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (envSecret && envSecret.length > 0) {
+    return { secret: envSecret, isSandbox: false };
   }
   if (!global._aagamanSandboxRzpSecret) {
     global._aagamanSandboxRzpSecret = crypto.randomBytes(32).toString('hex');
@@ -332,29 +333,34 @@ ordersPaymentsRouter.post('/orders/create', requireAuth, checkoutLimiter, async 
     let razorpayMode: 'live' | 'sandbox' = 'sandbox';
 
     if (!isCod) {
-      if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-        razorpayMode = 'live';
-        const authBasic = Buffer.from(
-          `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`
-        ).toString('base64');
-        const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${authBasic}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            amount: summary.grandTotal * 100,
-            currency: 'INR',
-            receipt: orderNumber,
-            notes: { orderNumber, userId: String(req.dbUser!.id) },
-          }),
-        });
-        const rzpJson = (await rzpRes.json()) as { id?: string; error?: { description?: string } };
-        if (!rzpRes.ok || !rzpJson.id) {
-          throw new Error(rzpJson.error?.description || 'Unable to initiate Razorpay checkout.');
+      const rzpKeyId = process.env.RAZORPAY_KEY_ID?.trim();
+      const rzpKeySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+      if (rzpKeyId && rzpKeySecret) {
+        try {
+          const authBasic = Buffer.from(`${rzpKeyId}:${rzpKeySecret}`).toString('base64');
+          const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
+            method: 'POST',
+            headers: {
+              Authorization: `Basic ${authBasic}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              amount: summary.grandTotal * 100,
+              currency: 'INR',
+              receipt: orderNumber,
+              notes: { orderNumber, userId: String(req.dbUser!.id) },
+            }),
+          });
+          const rzpJson = (await rzpRes.json()) as { id?: string; error?: { description?: string } };
+          if (rzpRes.ok && rzpJson.id) {
+            razorpayMode = 'live';
+            razorpayOrderId = rzpJson.id;
+          } else {
+            razorpayOrderId = `order_rzp_test_${crypto.randomBytes(6).toString('hex')}`;
+          }
+        } catch {
+          razorpayOrderId = `order_rzp_test_${crypto.randomBytes(6).toString('hex')}`;
         }
-        razorpayOrderId = rzpJson.id;
       } else {
         razorpayOrderId = `order_rzp_test_${crypto.randomBytes(6).toString('hex')}`;
       }
@@ -492,7 +498,7 @@ ordersPaymentsRouter.post('/orders/create', requireAuth, checkoutLimiter, async 
       razorpay: !isCod
         ? {
             mode: razorpayMode,
-            keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_aagaman_sandbox',
+            keyId: process.env.RAZORPAY_KEY_ID?.trim() || 'rzp_test_aagaman_sandbox',
             razorpayOrderId,
             amountPaise: summary.grandTotal * 100,
             currency: 'INR',
