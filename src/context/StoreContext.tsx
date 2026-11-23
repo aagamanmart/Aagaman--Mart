@@ -11,6 +11,7 @@ import {
   isJsonApiResponse,
   isStaticToken,
   staticSyncFirebaseCustomer,
+  syncStaticCustomerToServer,
   toggleStaticWishlist,
 } from '../lib/static-store';
 import type {
@@ -190,7 +191,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     const staticMeta = getStaticStoreMeta();
-    setConfig(staticMeta.config);
+    let resolvedConfig = staticMeta.config;
+    try {
+      const runtimeRes = await fetch('/api/runtime/config');
+      if (isJsonApiResponse(runtimeRes)) {
+        const runtimeJson = await runtimeRes.json();
+        if (runtimeJson.config && typeof runtimeJson.config === 'object') {
+          resolvedConfig = { ...staticMeta.config, ...runtimeJson.config };
+        }
+      }
+    } catch {
+      // ignore runtime config fetch errors
+    }
+
+    setConfig(resolvedConfig);
     setPublicCoupons(staticMeta.coupons);
     setPaymentMode(staticMeta.payment.mode);
     setRazorpayKeyId(staticMeta.payment.razorpayKeyId);
@@ -282,6 +296,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setAuthToken(savedStatic.token);
           setUser(savedStatic.user);
           setWishlistProducts(getStaticWishlistProducts(savedStatic.token));
+          void syncStaticCustomerToServer(savedStatic.user);
         } else {
           setUser(null);
         }

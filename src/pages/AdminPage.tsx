@@ -378,7 +378,8 @@ export const AdminPage: React.FC = () => {
 
   const loadAllAdminData = useCallback(async (token: string) => {
     if (isStaticToken(token)) {
-      setDashboard(getStaticAdminDashboard());
+      const staticDash = getStaticAdminDashboard();
+      setDashboard(staticDash);
       setAdminProducts(getStaticAdminProducts());
       const cats = getStaticAdminCategories();
       setAdminCategories(cats);
@@ -389,11 +390,77 @@ export const AdminPage: React.FC = () => {
       const ordData = getStaticAdminOrders();
       setAdminOrders(ordData.orders);
       setAdminReturns(ordData.returns);
-      setAdminCustomers(getStaticAdminCustomers());
+      const localCustomers = getStaticAdminCustomers();
+      setAdminCustomers(localCustomers);
       setAdminPayments(getStaticAdminPayments());
       setAdminCoupons(getStaticAdminCoupons());
-      setSettingsForm(getStaticAdminSettings());
+      const localSettings = getStaticAdminSettings();
+      setSettingsForm(localSettings);
       setAdminTickets(getStaticAdminTickets());
+
+      try {
+        const [rtCustRes, rtCfgRes] = await Promise.all([
+          fetch('/api/runtime/customers', { headers: { Authorization: `Bearer ${token}` } }),
+          fetch('/api/runtime/config'),
+        ]);
+        if (isJsonApiResponse(rtCustRes)) {
+          const rtCustJson = await rtCustRes.json();
+          const remoteCustomers: AdminCustomerItem[] = Array.isArray(rtCustJson.customers)
+            ? rtCustJson.customers
+            : [];
+          const byEmail = new Map<string, AdminCustomerItem>();
+          for (const lc of localCustomers) {
+            byEmail.set(lc.email.trim().toLowerCase(), lc);
+          }
+          for (const rc of remoteCustomers) {
+            const key = (rc.email || '').trim().toLowerCase();
+            if (!key) continue;
+            const existing = byEmail.get(key);
+            if (!existing) {
+              byEmail.set(key, rc);
+            } else {
+              byEmail.set(key, {
+                ...existing,
+                ...rc,
+                phone: rc.phone || existing.phone,
+                photoUrl: rc.photoUrl || existing.photoUrl,
+                addresses: (rc.addresses && rc.addresses.length > 0 ? rc.addresses : existing.addresses) || [],
+                orderCount: Math.max(rc.orderCount || 0, existing.orderCount || 0),
+                totalSpent: Math.max(rc.totalSpent || 0, existing.totalSpent || 0),
+                recentOrders:
+                  rc.recentOrders && rc.recentOrders.length > 0
+                    ? rc.recentOrders
+                    : existing.recentOrders || [],
+                lastLoginAt:
+                  new Date(rc.lastLoginAt || 0).getTime() >= new Date(existing.lastLoginAt || 0).getTime()
+                    ? rc.lastLoginAt
+                    : existing.lastLoginAt,
+              });
+            }
+          }
+          const mergedCustomers = Array.from(byEmail.values()).sort(
+            (a, b) =>
+              new Date(b.lastLoginAt || b.createdAt || 0).getTime() -
+              new Date(a.lastLoginAt || a.createdAt || 0).getTime()
+          );
+          setAdminCustomers(mergedCustomers);
+          setDashboard({
+            ...staticDash,
+            kpis: {
+              ...staticDash.kpis,
+              totalCustomers: mergedCustomers.length,
+            },
+          });
+        }
+        if (isJsonApiResponse(rtCfgRes)) {
+          const rtCfgJson = await rtCfgRes.json();
+          if (rtCfgJson.config && typeof rtCfgJson.config === 'object') {
+            setSettingsForm({ ...localSettings, ...rtCfgJson.config });
+          }
+        }
+      } catch {
+        // ignore offline runtime sync errors
+      }
       return;
     }
 
@@ -617,7 +684,7 @@ export const AdminPage: React.FC = () => {
           type="button"
           onClick={async () => {
             if (isStaticToken(adminToken)) {
-              updateStaticAdminSettings(settingsForm);
+              await updateStaticAdminSettings(settingsForm, adminToken);
               await refreshStoreMeta();
               notify('Top announcement bar updated!', 'success');
               return;
@@ -743,7 +810,7 @@ export const AdminPage: React.FC = () => {
             type="button"
             onClick={async () => {
               if (isStaticToken(adminToken)) {
-                updateStaticAdminSettings(settingsForm);
+                await updateStaticAdminSettings(settingsForm, adminToken);
                 await refreshStoreMeta();
                 notify('Homepage hero banners updated!', 'success');
                 return;
@@ -1916,6 +1983,18 @@ export const AdminPage: React.FC = () => {
                                 onClick={async () => {
                                   if (isStaticToken(adminToken)) {
                                     toggleStaticAdminCustomerBlock(c.id, !c.isBlocked);
+                                    try {
+                                      await fetch('/api/runtime/customers/block', {
+                                        method: 'PATCH',
+                                        headers: {
+                                          'Content-Type': 'application/json',
+                                          Authorization: `Bearer ${adminToken}`,
+                                        },
+                                        body: JSON.stringify({ email: c.email, isBlocked: !c.isBlocked }),
+                                      });
+                                    } catch {
+                                      // ignore offline runtime sync errors
+                                    }
                                   } else {
                                     await fetch(`/api/admin/customers/${c.id}/block`, {
                                       method: 'PATCH',
@@ -2146,7 +2225,7 @@ export const AdminPage: React.FC = () => {
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (isStaticToken(adminToken)) {
-                  updateStaticAdminSettings(settingsForm);
+                  await updateStaticAdminSettings(settingsForm, adminToken);
                   await refreshStoreMeta();
                   notify('Store settings updated!', 'success');
                   return;

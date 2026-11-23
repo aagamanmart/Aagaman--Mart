@@ -1065,6 +1065,47 @@ function saveStaticDb(dbState: StaticDatabase) {
   }
 }
 
+export async function syncStaticCustomerToServer(
+  customer: Partial<StaticCustomerRecord> & { email: string; name: string; authMethod?: string }
+): Promise<void> {
+  try {
+    await fetch('/api/runtime/customers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: customer.id,
+        uid: customer.uid,
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone || '',
+        photoUrl: customer.photoUrl || '',
+        authMethod: customer.authMethod || (customer.uid?.startsWith('static_uid_') ? 'email' : 'google'),
+        emailVerified: Boolean(customer.emailVerified),
+        phoneVerified: Boolean(customer.phoneVerified),
+        isBlocked: Boolean(customer.isBlocked),
+        createdAt: customer.createdAt,
+        lastLoginAt: customer.lastLoginAt || new Date().toISOString(),
+        addresses: customer.addresses,
+        wishlistCount: Array.isArray(customer.wishlistIds) ? customer.wishlistIds.length : undefined,
+      }),
+    });
+  } catch {
+    // ignore offline sync failures
+  }
+}
+
+export async function syncStaticConfigToServer(token: string, config: StoreConfig): Promise<void> {
+  try {
+    await fetch('/api/runtime/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ config }),
+    });
+  } catch {
+    // ignore offline sync failures
+  }
+}
+
 export function getStaticCategories(): Category[] {
   const dbState = loadStaticDb();
   const countMap = new Map<number, number>();
@@ -1424,6 +1465,7 @@ export function staticRegisterCustomer(payload: { name: string; email: string; p
   };
   dbState.customers.push(customer);
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   const token = `static_cust_${id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -1470,6 +1512,7 @@ export function staticLoginCustomer(email: string, password: string) {
   }
   customer.lastLoginAt = now;
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   const token = `static_cust_${customer.id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -1516,6 +1559,7 @@ export function staticSyncFirebaseCustomer(fb: {
     if (fb.emailVerified) customer.emailVerified = true;
   }
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   const token = `static_cust_${customer.id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -1566,6 +1610,7 @@ export function updateStaticCustomerProfile(token: string, patch: { name: string
   if (patch.phone !== undefined) customer.phone = patch.phone.trim();
   if (patch.photoUrl !== undefined) customer.photoUrl = patch.photoUrl.trim();
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   return { user: sanitizeCustomer(customer) };
 }
 
@@ -1576,6 +1621,7 @@ export function verifyStaticCustomerEmail(token: string) {
   if (customer) {
     customer.emailVerified = true;
     saveStaticDb(dbState);
+    void syncStaticCustomerToServer(customer);
   }
   return { ok: true, emailVerified: true };
 }
@@ -1589,6 +1635,7 @@ export function sendStaticCustomerOtp(token: string, phone: string) {
   customer.phone = phone.trim();
   customer.pendingOtp = otp;
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   return { ok: true, message: 'OTP sent to your mobile number.', sandboxOtp: otp };
 }
 
@@ -1602,6 +1649,7 @@ export function verifyStaticCustomerOtp(token: string, otp: string) {
   customer.phoneVerified = true;
   customer.pendingOtp = undefined;
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   return { ok: true, phoneVerified: true };
 }
 
@@ -1639,6 +1687,7 @@ export function addStaticAddress(token: string, payload: Omit<Address, 'id'>) {
   const addr: Address = { ...payload, id: Date.now() };
   customer.addresses.unshift(addr);
   saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
   return { address: addr };
 }
 
@@ -2447,10 +2496,11 @@ export function getStaticAdminSettings(): StoreConfig {
   return loadStaticDb().config;
 }
 
-export function updateStaticAdminSettings(config: StoreConfig) {
+export function updateStaticAdminSettings(config: StoreConfig, adminToken = 'static_admin_token'): Promise<void> {
   const dbState = loadStaticDb();
   dbState.config = config;
   saveStaticDb(dbState);
+  return syncStaticConfigToServer(adminToken, config);
 }
 
 export function getStaticAdminTickets(): StaticTicketRecord[] {

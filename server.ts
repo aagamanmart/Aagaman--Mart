@@ -10,6 +10,7 @@ import { adminRouter } from './src/server/routes/admin.ts';
 import { authRouter } from './src/server/routes/auth.ts';
 import { cartWishlistRouter } from './src/server/routes/cart-wishlist.ts';
 import { ordersPaymentsRouter } from './src/server/routes/orders-payments.ts';
+import { runtimeRouter } from './src/server/routes/runtime.ts';
 import { storefrontRouter } from './src/server/routes/storefront.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,9 +30,12 @@ async function startServer() {
     next();
   });
 
+  // Runtime fallback routes (always available even without external PostgreSQL)
+  app.use('/api', runtimeRouter);
+
   // Fail fast on DB-backed API routes when database is not configured so client offline store handles requests cleanly
   app.use('/api', (req, res, next) => {
-    if (isDbConfigured || req.path === '/health' || req.path.startsWith('/pincode/')) {
+    if (isDbConfigured || req.path === '/health' || req.path.startsWith('/pincode/') || req.path.startsWith('/runtime/')) {
       return next();
     }
     return res.status(503).json({

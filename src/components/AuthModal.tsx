@@ -10,6 +10,7 @@ import {
   staticRegisterCustomer,
   staticResetPassword,
   staticSyncFirebaseCustomer,
+  syncStaticCustomerToServer,
 } from '../lib/static-store';
 
 export const AuthModal: React.FC = () => {
@@ -57,6 +58,10 @@ export const AuthModal: React.FC = () => {
         photoURL: cred.user.photoURL,
         emailVerified: cred.user.emailVerified,
       });
+      await syncStaticCustomerToServer({
+        ...staticSession.user,
+        authMethod: 'google',
+      });
       await setCustomerSession(staticSession.token, staticSession.user);
       setIsAuthModalOpen(false);
       notify(`Welcome back, ${staticSession.user.name}!`, 'success');
@@ -98,15 +103,21 @@ export const AuthModal: React.FC = () => {
           }
         }
         const session = staticLoginCustomer(email, password);
+        await syncStaticCustomerToServer({ ...session.user, authMethod: 'email' });
         await setCustomerSession(session.token, session.user);
         setIsAuthModalOpen(false);
         notify(`Welcome back, ${session.user.name}!`, 'success');
       } else if (mode === 'register') {
+        const phoneDigits = phone.replace(/\D/g, '');
+        if (phoneDigits.length !== 10) {
+          throw new Error('Please enter a valid 10-digit Indian mobile number.');
+        }
+        const formattedPhone = `+91 ${phoneDigits}`;
         try {
           const res = await fetch('/api/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, email, phone, password }),
+            body: JSON.stringify({ name, email, phone: formattedPhone, password }),
           });
           if (hasJsonContentType(res) && res.status < 500) {
             const json = await res.json();
@@ -121,7 +132,8 @@ export const AuthModal: React.FC = () => {
             throw err;
           }
         }
-        const session = staticRegisterCustomer({ name, email, phone, password });
+        const session = staticRegisterCustomer({ name, email, phone: formattedPhone, password });
+        await syncStaticCustomerToServer({ ...session.user, authMethod: 'email' });
         await setCustomerSession(session.token, session.user);
         setIsAuthModalOpen(false);
         notify('Account created! Welcome to AAGAMAN MART.', 'success');
@@ -241,15 +253,25 @@ export const AuthModal: React.FC = () => {
                     className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
                   />
                 </div>
-                <div className="relative">
-                  <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <div className="flex items-center h-10 rounded-lg border border-slate-300 focus-within:ring-2 focus-within:ring-[#EA580C] bg-white overflow-hidden">
+                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full bg-slate-50 border-r border-slate-200 shrink-0 select-none">
+                    <Phone className="w-4 h-4 text-slate-400" />
+                    <span className="text-sm font-semibold text-[#0B1F3A] font-mono">+91</span>
+                  </div>
                   <input
                     type="tel"
+                    inputMode="numeric"
+                    required
+                    maxLength={10}
+                    pattern="[0-9]{10}"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="Mobile Number (+91)"
-                    className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    placeholder="10-digit mobile number"
+                    className="flex-1 h-full px-3 text-sm font-mono focus:outline-none"
                   />
+                  <span className="pr-3 text-[11px] font-mono text-slate-400 shrink-0 tabular-nums">
+                    {phone.length}/10
+                  </span>
                 </div>
               </>
             )}
