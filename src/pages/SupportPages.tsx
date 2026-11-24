@@ -1,8 +1,58 @@
-import React, { useEffect, useState } from 'react';
-import { CheckCircle2, ChevronDown, Mail, MapPin, Phone } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { CheckCircle2, ChevronDown, Mail, MapPin, MessageSquare, Phone, RefreshCw } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
-import { syncSupportTicketToFirestore } from '../lib/firestore-sync';
-import { hasJsonContentType, submitStaticSupportTicket } from '../lib/static-store';
+import { fetchMyFirestoreSupportTickets, syncSupportTicketToFirestore } from '../lib/firestore-sync';
+import {
+  getStaticCustomerTickets,
+  hasJsonContentType,
+  submitStaticSupportTicket,
+  type StaticTicketRecord,
+  type StaticTicketReply,
+} from '../lib/static-store';
+
+const MY_TICKETS_ACCESS_STORAGE = 'aagaman_my_support_tickets_v1';
+const DEVICE_KEYS_STORAGE = 'aagaman_email_device_keys_v1';
+
+interface SavedTicketAccess {
+  ticketId: string;
+  accessKey: string;
+}
+
+function getSavedTicketAccesses(): SavedTicketAccess[] {
+  try {
+    const raw = window.localStorage.getItem(MY_TICKETS_ACCESS_STORAGE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((x) => x && typeof x.ticketId === 'string' && typeof x.accessKey === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTicketAccess(ticketId?: string, accessKey?: string) {
+  if (!ticketId || !accessKey) return;
+  try {
+    const list = getSavedTicketAccesses().filter((x) => x.ticketId !== ticketId);
+    list.unshift({ ticketId, accessKey });
+    window.localStorage.setItem(MY_TICKETS_ACCESS_STORAGE, JSON.stringify(list.slice(0, 30)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getStoredEmailDeviceKey(email?: string): string {
+  if (!email) return '';
+  try {
+    const raw = window.localStorage.getItem(DEVICE_KEYS_STORAGE);
+    if (!raw) return '';
+    const map = JSON.parse(raw) as Record<string, string>;
+    return map[email.trim().toLowerCase()] || '';
+  } catch {
+    return '';
+  }
+}
 
 export const SupportPage: React.FC = () => {
   const { config, authToken, user, notify } = useStore();
@@ -12,11 +62,88 @@ export const SupportPage: React.FC = () => {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [myTickets, setMyTickets] = useState<StaticTicketRecord[]>([]);
+  const [loadingTickets, setLoadingTickets] = useState(false);
   const [submittedInfo, setSubmittedInfo] = useState<{
     message: string;
     routedToEmail: string;
     emailStatus?: string;
   } | null>(null);
+
+  const loadMyTickets = useCallback(async () => {
+    setLoadingTickets(true);
+    try {
+      const accesses = getSavedTicketAccesses();
+      const targetEmail = (user?.email || email || '').trim().toLowerCase();
+      const deviceKey = user?.email ? getStoredEmailDeviceKey(user.email) : '';
+
+      const merged = new Map<string, StaticTicketRecord>();
+      const mergeReplies = (a?: StaticTicketReply[], b?: StaticTicketReply[]): StaticTicketReply[] => {
+        const rMap = new Map<string, StaticTicketReply>();
+        for (const r of [...(a || []), ...(b || [])]) {
+          if (r?.replyId) rMap.set(r.replyId, r);
+        }
+        return Array.from(rMap.values()).sort(
+          (x, y) => new Date(x.createdAt).getTime() - new Date(y.createdAt).getTime()
+        );
+      };
+      const addTicket = (t: Partial<StaticTicketRecord> & { subject: string; message: string; email: string; createdAt: string }) => {
+        const key = t.ticketId || `${t.email.toLowerCase()}|${t.subject.trim()}|${t.message.slice(0, 40)}`;
+        const prev = merged.get(key);
+        const normalized: StaticTicketRecord = {
+          id: Number(t.id || prev?.id || 0),
+          ticketId: t.ticketId || prev?.ticketId,
+          name: t.name || prev?.name || 'Customer',
+          email: t.email || prev?.email || '',
+          phone: t.phone || prev?.phone || '',
+          subject: t.subject,
+          message: t.message,
+          status: t.status || prev?.status || 'Open',
+          routedToEmail: t.routedToEmail || prev?.routedToEmail,
+          emailStatus: t.emailStatus || prev?.emailStatus,
+          replies: mergeReplies(prev?.replies, t.replies),
+          createdAt: t.createdAt || prev?.createdAt || new Date().toISOString(),
+        };
+        merged.set(key, normalized);
+      };
+
+      const savedIds = accesses.map((a) => a.ticketId);
+      for (const localTk of getStaticCustomerTickets(targetEmail, savedIds)) {
+        addTicket(localTk);
+      }
+
+      if (accesses.length > 0 || (user?.email && deviceKey)) {
+        const rtRes = await fetch('/api/runtime/support/my-tickets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticketAccesses: accesses,
+            email: user?.email || undefined,
+            deviceKey: deviceKey || undefined,
+          }),
+        }).catch(() => null);
+        if (rtRes && hasJsonContentType(rtRes) && rtRes.ok) {
+          const rtJson = await rtRes.json();
+          if (Array.isArray(rtJson.tickets)) {
+            for (const rtTk of rtJson.tickets) addTicket(rtTk);
+          }
+        }
+      }
+
+      const fsTickets = await fetchMyFirestoreSupportTickets().catch(() => []);
+      for (const ft of fsTickets) {
+        addTicket(ft);
+      }
+
+      setMyTickets(
+        Array.from(merged.values()).sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )
+      );
+    } finally {
+      setLoadingTickets(false);
+    }
+  }, [email, user?.email]);
 
   useEffect(() => {
     if (user) {
@@ -25,6 +152,10 @@ export const SupportPage: React.FC = () => {
       setPhone((prev) => prev || user.phone || '');
     }
   }, [user]);
+
+  useEffect(() => {
+    void loadMyTickets();
+  }, [loadMyTickets]);
 
   const submitTicket = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,9 +226,11 @@ export const SupportPage: React.FC = () => {
             return;
           }
           const routed = rtJson.routedToEmail || config?.supportEmail || 'utkarshjaiswar137@gmail.com';
+          const savedRef = rtJson.ticket?.ticketId || ticketRef;
+          saveTicketAccess(savedRef, rtJson.accessKey);
           submitStaticSupportTicket({
             id: rtJson.ticketId,
-            ticketId: rtJson.ticket?.ticketId || ticketRef,
+            ticketId: savedRef,
             name,
             email,
             phone,
@@ -107,7 +240,7 @@ export const SupportPage: React.FC = () => {
             emailStatus: rtJson.emailStatus || 'pending_smtp',
           });
           await syncSupportTicketToFirestore({
-            ticketId: rtJson.ticket?.ticketId || ticketRef,
+            ticketId: savedRef,
             name,
             email,
             phone,
@@ -123,6 +256,7 @@ export const SupportPage: React.FC = () => {
           });
           setSubject('');
           setMessage('');
+          void loadMyTickets();
           notify('Support ticket sent to Admin Support Channel!', 'success');
           return;
         }
@@ -156,6 +290,7 @@ export const SupportPage: React.FC = () => {
       });
       setSubject('');
       setMessage('');
+      void loadMyTickets();
       notify('Support ticket received!', 'success');
     } finally {
       setSubmitting(false);
@@ -260,6 +395,92 @@ export const SupportPage: React.FC = () => {
           </button>
         </form>
       </div>
+
+      {/* Live Customer Support Tickets & Admin Replies */}
+      <section className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-bold text-[#0B1F3A] flex items-center gap-2">
+              <MessageSquare className="w-5 h-5 text-[#EA580C]" /> Your Support Queries &amp; Admin Replies ({myTickets.length})
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Track your ticket status and read replies from our support team right here (as well as in your email).
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={loadingTickets}
+            onClick={() => void loadMyTickets()}
+            className="px-3.5 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-[#0B1F3A] inline-flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingTickets ? 'animate-spin' : ''}`} />
+            {loadingTickets ? 'Refreshing...' : 'Refresh Replies'}
+          </button>
+        </div>
+
+        {myTickets.length === 0 ? (
+          <div className="rounded-xl bg-slate-50 border border-slate-200/80 p-6 text-center text-xs text-slate-500">
+            No support tickets submitted on this account/device yet. Submit a query above and Admin replies will appear here automatically.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {myTickets.map((tk) => (
+              <div key={tk.ticketId || `${tk.id}-${tk.createdAt}`} className="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50/40">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    {tk.ticketId && (
+                      <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-slate-200/70 text-[#0B1F3A]">
+                        {tk.ticketId}
+                      </span>
+                    )}
+                    <h3 className="font-display text-sm font-bold text-[#0B1F3A]">{tk.subject}</h3>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full font-semibold ${
+                        tk.status === 'Resolved'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : tk.status === 'In Progress'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
+                    >
+                      {tk.status}
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {new Date(tk.createdAt).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed bg-white border border-slate-200/80 rounded-lg p-3">
+                  {tk.message}
+                </p>
+
+                {tk.replies && tk.replies.length > 0 ? (
+                  <div className="space-y-2 pl-3 border-l-2 border-[#EA580C]">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-[#EA580C]">
+                      Support Team Replies ({tk.replies.length})
+                    </p>
+                    {tk.replies.map((r) => (
+                      <div key={r.replyId} className="bg-orange-50/70 border border-orange-200 rounded-lg p-3 space-y-1 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <span className="font-bold text-[#0B1F3A]">{r.senderName || 'AAGAMAN MART Support'}</span>
+                          <span className="text-slate-400">{new Date(r.createdAt).toLocaleString('en-IN')}</span>
+                        </div>
+                        <p className="text-slate-700 whitespace-pre-wrap leading-relaxed">{r.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 italic">
+                    Awaiting reply from our support team...
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </main>
   );
 };

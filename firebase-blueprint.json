@@ -258,6 +258,63 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "SupportTicketReply": {
+      "title": "SupportTicketReply",
+      "description": "Admin support reply stored under a support ticket and dispatched to the customer email.",
+      "type": "object",
+      "properties": {
+        "replyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ticketId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ticketUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "emailStatus": {
+          "type": "string",
+          "enum": ["sent", "pending_smtp", "failed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "replyId",
+        "ticketId",
+        "ticketUid",
+        "senderRole",
+        "senderName",
+        "message",
+        "emailStatus",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -276,6 +333,10 @@
     "/supportTickets/{ticketId}": {
       "schema": { "$ref": "#/entities/SupportTicket" },
       "description": "Verified customer support queries readable by the ticket author or store admin, updatable only by store admin."
+    },
+    "/supportTickets/{ticketId}/replies/{replyId}": {
+      "schema": { "$ref": "#/entities/SupportTicketReply" },
+      "description": "Admin replies to a support ticket readable by the ticket author or store admin, writable only by store admin."
     }
   }
 }

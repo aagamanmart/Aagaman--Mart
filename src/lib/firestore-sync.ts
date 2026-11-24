@@ -9,6 +9,7 @@ import {
   setDoc,
   Timestamp,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { normalizeDeliveryConfig } from './pincode';
@@ -272,9 +273,19 @@ export async function saveFirestoreStoreConfig(config: StoreConfig): Promise<voi
   }
 }
 
+export interface FirestoreSupportReplyItem {
+  replyId: string;
+  senderRole: 'admin';
+  senderName: string;
+  message: string;
+  emailStatus: string;
+  createdAt: string;
+}
+
 export interface FirestoreSupportTicketItem {
   id: number;
   ticketId: string;
+  uid?: string;
   name: string;
   email: string;
   phone: string;
@@ -283,6 +294,7 @@ export interface FirestoreSupportTicketItem {
   status: string;
   routedToEmail: string;
   emailStatus: string;
+  replies?: FirestoreSupportReplyItem[];
   createdAt: string;
 }
 
@@ -322,31 +334,149 @@ export async function syncSupportTicketToFirestore(payload: {
   }
 }
 
+async function fetchTicketRepliesForTicket(ticketId: string): Promise<FirestoreSupportReplyItem[]> {
+  const path = `supportTickets/${ticketId}/replies`;
+  try {
+    const q = query(collection(db, 'supportTickets', ticketId, 'replies'), orderBy('createdAt', 'asc'));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        replyId: String(data.replyId || d.id),
+        senderRole: 'admin' as const,
+        senderName: String(data.senderName || 'AAGAMAN MART Support'),
+        message: String(data.message || ''),
+        emailStatus: String(data.emailStatus || 'pending_smtp'),
+        createdAt: toIsoString(data.createdAt) || new Date().toISOString(),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchFirestoreSupportTicketsAsAdmin(): Promise<FirestoreSupportTicketItem[]> {
   if (!isFirebaseBootstrappedAdmin()) return [];
   const path = 'supportTickets';
   try {
     const q = query(collection(db, path), orderBy('createdAt', 'desc'));
     const snap = await getDocs(q);
-    return snap.docs.map((d) => {
-      const data = d.data();
-      const ticketId = String(data.ticketId || d.id);
-      return {
-        id: stableNumericId(ticketId),
-        ticketId,
-        name: String(data.name || ''),
-        email: String(data.email || ''),
-        phone: String(data.phone || ''),
-        subject: String(data.subject || ''),
-        message: String(data.message || ''),
-        status: String(data.status || 'Open'),
-        routedToEmail: String(data.routedToEmail || BOOTSTRAPPED_ADMIN_EMAIL),
-        emailStatus: String(data.emailStatus || 'pending_smtp'),
-        createdAt: toIsoString(data.createdAt) || new Date().toISOString(),
-      };
-    });
+    return Promise.all(
+      snap.docs.map(async (d) => {
+        const data = d.data();
+        const ticketId = String(data.ticketId || d.id);
+        const replies = await fetchTicketRepliesForTicket(ticketId);
+        return {
+          id: stableNumericId(ticketId),
+          ticketId,
+          uid: String(data.uid || ''),
+          name: String(data.name || ''),
+          email: String(data.email || ''),
+          phone: String(data.phone || ''),
+          subject: String(data.subject || ''),
+          message: String(data.message || ''),
+          status: String(data.status || 'Open'),
+          routedToEmail: String(data.routedToEmail || BOOTSTRAPPED_ADMIN_EMAIL),
+          emailStatus: String(data.emailStatus || 'pending_smtp'),
+          replies,
+          createdAt: toIsoString(data.createdAt) || new Date().toISOString(),
+        };
+      })
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function fetchMyFirestoreSupportTickets(): Promise<FirestoreSupportTicketItem[]> {
+  const cur = auth.currentUser;
+  if (!cur || !cur.emailVerified) return [];
+  const path = 'supportTickets';
+  try {
+    const q = query(collection(db, path), where('uid', '==', cur.uid));
+    const snap = await getDocs(q);
+    const items = await Promise.all(
+      snap.docs.map(async (d) => {
+        const data = d.data();
+        const ticketId = String(data.ticketId || d.id);
+        const repliesPath = `supportTickets/${ticketId}/replies`;
+        let replies: FirestoreSupportReplyItem[] = [];
+        try {
+          const rq = query(
+            collection(db, 'supportTickets', ticketId, 'replies'),
+            where('ticketUid', '==', cur.uid)
+          );
+          const rSnap = await getDocs(rq);
+          replies = rSnap.docs
+            .map((rd) => {
+              const rData = rd.data();
+              return {
+                replyId: String(rData.replyId || rd.id),
+                senderRole: 'admin' as const,
+                senderName: String(rData.senderName || 'AAGAMAN MART Support'),
+                message: String(rData.message || ''),
+                emailStatus: String(rData.emailStatus || 'pending_smtp'),
+                createdAt: toIsoString(rData.createdAt) || new Date().toISOString(),
+              };
+            })
+            .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        } catch (repErr) {
+          handleFirestoreError(repErr, OperationType.LIST, repliesPath);
+        }
+        return {
+          id: stableNumericId(ticketId),
+          ticketId,
+          uid: cur.uid,
+          name: String(data.name || ''),
+          email: String(data.email || ''),
+          phone: String(data.phone || ''),
+          subject: String(data.subject || ''),
+          message: String(data.message || ''),
+          status: String(data.status || 'Open'),
+          routedToEmail: String(data.routedToEmail || BOOTSTRAPPED_ADMIN_EMAIL),
+          emailStatus: String(data.emailStatus || 'pending_smtp'),
+          replies,
+          createdAt: toIsoString(data.createdAt) || new Date().toISOString(),
+        };
+      })
+    );
+    return items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function addFirestoreSupportTicketReply(payload: {
+  ticketId: string;
+  ticketUid?: string;
+  replyId: string;
+  senderName: string;
+  message: string;
+  emailStatus: 'sent' | 'pending_smtp' | 'failed';
+}): Promise<void> {
+  if (!isFirebaseBootstrappedAdmin() || !payload.ticketId) return;
+  const safeReplyId = payload.replyId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 128) || `RPL-${Date.now()}`;
+  const path = `supportTickets/${payload.ticketId}/replies/${safeReplyId}`;
+  let resolvedTicketUid = payload.ticketUid || '';
+  try {
+    if (!resolvedTicketUid) {
+      const parentSnap = await getDoc(doc(db, 'supportTickets', payload.ticketId));
+      if (!parentSnap.exists()) return;
+      resolvedTicketUid = String(parentSnap.data().uid || '');
+    }
+    if (!resolvedTicketUid) return;
+    await setDoc(doc(db, 'supportTickets', payload.ticketId, 'replies', safeReplyId), {
+      replyId: safeReplyId,
+      ticketId: payload.ticketId,
+      ticketUid: resolvedTicketUid,
+      senderRole: 'admin',
+      senderName: clampStr(payload.senderName || 'AAGAMAN MART Support', 160),
+      message: clampStr(payload.message, 2000),
+      emailStatus: payload.emailStatus,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 

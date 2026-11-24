@@ -25,7 +25,11 @@ import {
 } from '../../db/schema.ts';
 import { createRateLimiter, hashPassword, signToken, verifyPassword } from '../../lib/security.ts';
 import { requireAdmin, type AuthRequest } from '../../middleware/auth.ts';
-import { getMailConfigStatus, resolveLiveSupportEmail } from '../lib/support-mailer.ts';
+import {
+  dispatchSupportReplyEmail,
+  getMailConfigStatus,
+  resolveLiveSupportEmail,
+} from '../lib/support-mailer.ts';
 
 export const adminRouter = Router();
 const adminLoginLimiter = createRateLimiter(60_000, 15);
@@ -864,4 +868,55 @@ adminRouter.patch('/admin/support-tickets/:id', requireAdmin, async (req, res) =
   if (!id || !parsed.success) return res.status(400).json({ error: 'Invalid ticket update.' });
   await db.update(supportTickets).set({ status: parsed.data.status }).where(eq(supportTickets.id, id));
   res.json({ ok: true });
+});
+
+adminRouter.post('/admin/support-tickets/:id/reply', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const schema = z.object({
+    message: z.string().trim().min(1).max(2000),
+    status: z.enum(['Open', 'In Progress', 'Resolved']).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!id || !parsed.success) return res.status(400).json({ error: 'Please enter a valid reply message.' });
+
+  const found = await db.select().from(supportTickets).where(eq(supportTickets.id, id)).limit(1);
+  const ticket = found[0];
+  if (!ticket) return res.status(404).json({ error: 'Support ticket not found.' });
+
+  const nextStatus = parsed.data.status || (ticket.status === 'Open' ? 'In Progress' : ticket.status);
+  await db.update(supportTickets).set({ status: nextStatus }).where(eq(supportTickets.id, id));
+
+  const settingsRows = await db.select().from(siteSettings).where(eq(siteSettings.key, 'store_config')).limit(1);
+  const pgCfg = (settingsRows[0]?.value || {}) as Record<string, unknown>;
+  const supportEmail = await resolveLiveSupportEmail({ pgSupportEmail: pgCfg.supportEmail });
+
+  const repliedAt = new Date().toISOString();
+  const mailResult = await dispatchSupportReplyEmail({
+    ticketId: String(ticket.id),
+    customerName: ticket.name,
+    customerEmail: ticket.email,
+    originalSubject: ticket.subject,
+    originalMessage: ticket.message,
+    replyMessage: parsed.data.message,
+    supportEmail,
+    repliedAt,
+  });
+
+  if (ticket.userId) {
+    await db.insert(notifications).values({
+      userId: ticket.userId,
+      channel: 'email',
+      type: 'support_reply',
+      title: `Reply on Ticket #${ticket.id}: ${ticket.subject}`,
+      message: parsed.data.message,
+      isRead: false,
+    });
+  }
+
+  res.status(201).json({
+    ok: true,
+    emailStatus: mailResult.emailStatus,
+    emailProvider: mailResult.provider,
+    status: nextStatus,
+  });
 });

@@ -23,6 +23,7 @@ import {
   Phone,
   Plus,
   Search,
+  Send,
   Settings,
   ShieldAlert,
   ShoppingBag,
@@ -40,6 +41,7 @@ import { formatINR, useStore } from '../context/StoreContext';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
+  addFirestoreSupportTicketReply,
   fetchFirestoreCustomersAsAdmin,
   fetchFirestoreStoreConfig,
   fetchFirestoreSupportTicketsAsAdmin,
@@ -49,6 +51,7 @@ import {
   updateFirestoreSupportTicketStatus,
 } from '../lib/firestore-sync';
 import {
+  addStaticAdminTicketReply,
   applyRuntimeCatalogSync,
   applyStaticBulkDiscount,
   createStaticAdminCategory,
@@ -308,9 +311,18 @@ export const AdminPage: React.FC = () => {
       isActive: boolean;
     }>
   >([]);
+  interface AdminTicketReplyItem {
+    replyId: string;
+    senderRole: 'admin' | 'customer';
+    senderName: string;
+    message: string;
+    emailStatus?: string;
+    createdAt: string;
+  }
   interface AdminTicketItem {
     id: number;
     ticketId?: string;
+    uid?: string;
     name: string;
     email: string;
     phone?: string;
@@ -319,11 +331,17 @@ export const AdminPage: React.FC = () => {
     status: string;
     routedToEmail?: string;
     emailStatus?: string;
+    replies?: AdminTicketReplyItem[];
     createdAt: string;
   }
   const [adminTickets, setAdminTickets] = useState<AdminTicketItem[]>([]);
   const [ticketSearch, setTicketSearch] = useState('');
   const [ticketStatusFilter, setTicketStatusFilter] = useState<'all' | 'Open' | 'In Progress' | 'Resolved'>('all');
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [replySendingKey, setReplySendingKey] = useState<string | null>(null);
+  const [lastReplyMailLinks, setLastReplyMailLinks] = useState<
+    Record<string, { to: string; subject: string; body: string; emailStatus: string }>
+  >({});
   const [supportMailInfo, setSupportMailInfo] = useState<{
     activeSupportEmail: string;
     mailConfigured: boolean;
@@ -499,19 +517,35 @@ export const AdminPage: React.FC = () => {
         }
 
         const mergedTicketsMap = new Map<string, AdminTicketItem>();
+        const mergeReplies = (a?: AdminTicketReplyItem[], b?: AdminTicketReplyItem[]): AdminTicketReplyItem[] => {
+          const map = new Map<string, AdminTicketReplyItem>();
+          for (const r of [...(a || []), ...(b || [])]) {
+            if (!r?.replyId) continue;
+            const prevR = map.get(r.replyId);
+            map.set(r.replyId, prevR ? { ...prevR, ...r, emailStatus: r.emailStatus === 'sent' ? 'sent' : r.emailStatus || prevR.emailStatus } : r);
+          }
+          return Array.from(map.values()).sort(
+            (x, y) => new Date(x.createdAt).getTime() - new Date(y.createdAt).getTime()
+          );
+        };
         const mergeTicket = (t: AdminTicketItem) => {
           const key = t.ticketId || `${t.email.toLowerCase()}|${t.subject.trim()}|${t.message.slice(0, 40)}`;
           const prev = mergedTicketsMap.get(key);
           if (!prev) {
-            mergedTicketsMap.set(key, t);
+            mergedTicketsMap.set(key, {
+              ...t,
+              replies: mergeReplies(t.replies, undefined),
+            });
           } else {
             mergedTicketsMap.set(key, {
               ...prev,
               ...t,
               id: prev.id || t.id,
+              uid: t.uid || prev.uid,
               phone: t.phone || prev.phone,
               routedToEmail: t.routedToEmail || prev.routedToEmail,
               emailStatus: t.emailStatus === 'sent' ? 'sent' : t.emailStatus || prev.emailStatus,
+              replies: mergeReplies(prev.replies, t.replies),
             });
           }
         };
@@ -3545,8 +3579,110 @@ export const AdminPage: React.FC = () => {
                       (t.phone || '').toLowerCase().includes(q)
                     );
                   })
-                  .map((t) => (
-                    <div key={`${t.ticketId || t.id}`} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                  .map((t) => {
+                    const tKey = t.ticketId || String(t.id);
+                    const draft = replyDrafts[tKey] || '';
+                    const isSending = replySendingKey === tKey;
+                    const quickMail = lastReplyMailLinks[tKey];
+                    const sendAdminReply = async (nextStatus?: 'In Progress' | 'Resolved') => {
+                      const cleanMsg = draft.trim();
+                      if (!cleanMsg) {
+                        notify('Please enter a reply message first.', 'error');
+                        return;
+                      }
+                      if (!adminToken) return;
+                      setReplySendingKey(tKey);
+                      try {
+                        let emailStatus = 'pending_smtp';
+                        let savedReply: AdminTicketReplyItem = {
+                          replyId: `RPL-${Date.now().toString(36).toUpperCase()}`,
+                          senderRole: 'admin',
+                          senderName: 'AAGAMAN MART Support',
+                          message: cleanMsg,
+                          emailStatus,
+                          createdAt: new Date().toISOString(),
+                        };
+
+                        if (!isStaticToken(adminToken)) {
+                          const pgRes = await fetch(`/api/admin/support-tickets/${t.id}/reply`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                            body: JSON.stringify({ message: cleanMsg, status: nextStatus }),
+                          }).catch(() => null);
+                          if (pgRes && isJsonApiResponse(pgRes) && pgRes.ok) {
+                            const pgJson = await pgRes.json();
+                            emailStatus = pgJson.emailStatus || emailStatus;
+                            savedReply.emailStatus = emailStatus;
+                          }
+                        }
+
+                        const rtRes = await fetch(`/api/runtime/support/${encodeURIComponent(tKey)}/reply`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                          body: JSON.stringify({
+                            message: cleanMsg,
+                            status: nextStatus,
+                            senderName: 'AAGAMAN MART Support',
+                          }),
+                        }).catch(() => null);
+                        if (rtRes && isJsonApiResponse(rtRes) && rtRes.ok) {
+                          const rtJson = await rtRes.json();
+                          emailStatus = rtJson.emailStatus || emailStatus;
+                          if (rtJson.reply) {
+                            savedReply = rtJson.reply;
+                          }
+                        }
+
+                        addStaticAdminTicketReply(tKey, savedReply, nextStatus);
+                        if (firebaseAdminConnected && t.ticketId && t.uid) {
+                          const normalizedReplyMailStatus: 'sent' | 'pending_smtp' | 'failed' =
+                            savedReply.emailStatus === 'sent'
+                              ? 'sent'
+                              : savedReply.emailStatus === 'failed'
+                              ? 'failed'
+                              : 'pending_smtp';
+                          await addFirestoreSupportTicketReply({
+                            ticketId: t.ticketId,
+                            ticketUid: t.uid,
+                            replyId: savedReply.replyId,
+                            senderName: savedReply.senderName,
+                            message: savedReply.message,
+                            emailStatus: normalizedReplyMailStatus,
+                          }).catch(() => {});
+                          const fsNextStatus = nextStatus || (t.status === 'Open' ? 'In Progress' : undefined);
+                          if (fsNextStatus) {
+                            await updateFirestoreSupportTicketStatus(t.ticketId, fsNextStatus).catch(() => {});
+                          }
+                        }
+
+                        setReplyDrafts((prev) => ({ ...prev, [tKey]: '' }));
+                        if (emailStatus === 'sent') {
+                          setLastReplyMailLinks((prev) => {
+                            const next = { ...prev };
+                            delete next[tKey];
+                            return next;
+                          });
+                          notify(`Reply saved in Admin/Customer Portal & emailed to ${t.email}!`, 'success');
+                        } else {
+                          setLastReplyMailLinks((prev) => ({
+                            ...prev,
+                            [tKey]: {
+                              to: t.email,
+                              subject: `Re: [Ticket #${t.ticketId || t.id}] ${t.subject}`,
+                              body: `Hi ${t.name},\n\n${cleanMsg}\n\nRegards,\nAAGAMAN MART Support Team\n${settingsForm.supportEmail || supportMailInfo.activeSupportEmail}`,
+                              emailStatus,
+                            },
+                          }));
+                          notify('Reply saved in Admin & Customer Support Portal! Click "Open in Gmail" below to send email too.', 'success');
+                        }
+                        await loadAllAdminData(adminToken);
+                      } finally {
+                        setReplySendingKey(null);
+                      }
+                    };
+
+                    return (
+                    <div key={tKey} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3.5">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
@@ -3575,10 +3711,12 @@ export const AdminPage: React.FC = () => {
 
                         <div className="flex items-center gap-2 shrink-0">
                           <a
-                            href={`mailto:${encodeURIComponent(t.email)}?subject=${encodeURIComponent(`Re: [Ticket #${t.id}] ${t.subject}`)}`}
+                            href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(t.email)}&su=${encodeURIComponent(`Re: [Ticket #${t.ticketId || t.id}] ${t.subject}`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="px-3 h-8 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-[#0B1F3A] font-semibold inline-flex items-center gap-1.5"
                           >
-                            <Mail className="w-3.5 h-3.5 text-[#EA580C]" /> Reply via Mail
+                            <Mail className="w-3.5 h-3.5 text-[#EA580C]" /> Open in Gmail
                           </a>
                           <select
                             value={t.status}
@@ -3616,8 +3754,100 @@ export const AdminPage: React.FC = () => {
                       <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3.5 text-slate-700 whitespace-pre-wrap leading-relaxed">
                         {t.message}
                       </div>
+
+                      {t.replies && t.replies.length > 0 && (
+                        <div className="space-y-2 pl-3 border-l-2 border-[#EA580C]/40">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                            Admin Replies ({t.replies.length})
+                          </p>
+                          {t.replies.map((r) => (
+                            <div key={r.replyId} className="bg-orange-50/60 border border-orange-200/80 rounded-lg p-3 space-y-1">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="font-bold text-[#0B1F3A]">{r.senderName || 'AAGAMAN MART Support'}</span>
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded font-semibold ${
+                                      r.emailStatus === 'sent'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : 'bg-white text-slate-600 border border-slate-200'
+                                    }`}
+                                  >
+                                    {r.emailStatus === 'sent' ? 'Emailed to Customer' : 'Saved in Portal'}
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {new Date(r.createdAt).toLocaleString('en-IN')}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="text-slate-700 whitespace-pre-wrap leading-relaxed">{r.message}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="bg-slate-50/70 border border-slate-200 rounded-lg p-3 space-y-2.5">
+                        <textarea
+                          rows={2}
+                          value={draft}
+                          onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [tKey]: e.target.value }))}
+                          placeholder={`Write a reply to ${t.name} (${t.email}) — saves in Admin Panel + Customer Support Page & emails customer...`}
+                          className="w-full p-2.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-500">
+                            {supportMailInfo.mailConfigured
+                              ? `Will auto-email ${t.email} via ${supportMailInfo.provider.toUpperCase()} & update portal`
+                              : `Saves in Admin & Customer Portal instantly (use "Open in Gmail" if SMTP Secrets aren't added yet)`}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={isSending || !draft.trim()}
+                              onClick={() => void sendAdminReply(t.status === 'Open' ? 'In Progress' : undefined)}
+                              className="px-3.5 h-8 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              {isSending ? 'Sending...' : 'Send Reply (Admin + Email)'}
+                            </button>
+                            {t.status !== 'Resolved' && (
+                              <button
+                                type="button"
+                                disabled={isSending || !draft.trim()}
+                                onClick={() => void sendAdminReply('Resolved')}
+                                className="px-3 h-8 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold disabled:opacity-50"
+                              >
+                                Send &amp; Mark Resolved
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {quickMail && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 text-[11px]">
+                            <span className="text-amber-800 font-medium">
+                              Reply saved on site! Auto-SMTP isn&apos;t configured yet — send via Gmail in 1 click:
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <a
+                                href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(quickMail.to)}&su=${encodeURIComponent(quickMail.subject)}&body=${encodeURIComponent(quickMail.body)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-2.5 py-1 rounded bg-[#EA580C] text-white font-semibold hover:bg-[#C2410C]"
+                              >
+                                Open in Gmail with Reply Ready →
+                              </a>
+                              <a
+                                href={`mailto:${encodeURIComponent(quickMail.to)}?subject=${encodeURIComponent(quickMail.subject)}&body=${encodeURIComponent(quickMail.body)}`}
+                                className="px-2.5 py-1 rounded border border-slate-300 bg-white text-[#0B1F3A] font-semibold hover:bg-slate-50"
+                              >
+                                Mail App
+                              </a>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  ))}
+                    );
+                  })}
               </div>
             )}
           </div>

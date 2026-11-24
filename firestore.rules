@@ -246,6 +246,37 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidSupportTicketReply(data) {
+      return data.keys().hasAll([
+          'replyId',
+          'ticketId',
+          'ticketUid',
+          'senderRole',
+          'senderName',
+          'message',
+          'emailStatus',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'replyId',
+          'ticketId',
+          'ticketUid',
+          'senderRole',
+          'senderName',
+          'message',
+          'emailStatus',
+          'createdAt'
+        ])
+        && isValidId(data.replyId)
+        && isValidId(data.ticketId)
+        && isValidId(data.ticketUid)
+        && data.senderRole is string && data.senderRole == 'admin'
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 160
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 2000
+        && data.emailStatus is string && data.emailStatus in ['sent', 'pending_smtp', 'failed']
+        && data.createdAt is timestamp;
+    }
+
     match /customers/{customerId} {
       allow get: if isSignedIn() && isValidId(customerId) && (isOwner(customerId) || isAdmin());
       allow list: if isBootstrappedAdmin();
@@ -329,6 +360,24 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
       allow delete: if false;
+
+      match /replies/{replyId} {
+        allow get: if isValidId(ticketId)
+          && isValidId(replyId)
+          && (isAdmin() || (isVerifiedUser() && get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.uid == request.auth.uid));
+        allow list: if isValidId(ticketId)
+          && (isBootstrappedAdmin() || (isVerifiedUser() && resource.data.ticketUid == request.auth.uid));
+        allow create: if isAdmin()
+          && isValidId(ticketId)
+          && isValidId(replyId)
+          && isValidSupportTicketReply(incoming())
+          && exists(/databases/$(database)/documents/supportTickets/$(ticketId))
+          && incoming().replyId == replyId
+          && incoming().ticketId == ticketId
+          && incoming().ticketUid == get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.uid
+          && incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
     }
 
     match /admins/{adminUid} {

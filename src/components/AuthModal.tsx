@@ -63,13 +63,24 @@ export const AuthModal: React.FC = () => {
   const [googleError, setGoogleError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const savedGoogleEmail =
-    typeof window !== 'undefined' ? window.localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || '' : '';
+  const savedGoogleEmail = (() => {
+    try {
+      return typeof window !== 'undefined' ? window.localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || '' : '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const [needsGooglePrompt, setNeedsGooglePrompt] = useState(false);
 
   const completeFirebaseCustomerSignIn = useCallback(async (fbUser: NonNullable<typeof auth.currentUser>) => {
     const idToken = await fbUser.getIdToken();
-    if (fbUser.email && typeof window !== 'undefined') {
-      window.localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, fbUser.email);
+    try {
+      if (fbUser.email && typeof window !== 'undefined') {
+        window.localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, fbUser.email);
+      }
+    } catch {
+      // ignore storage errors
     }
     try {
       const res = await fetch('/api/auth/firebase-sync', {
@@ -172,10 +183,57 @@ export const AuthModal: React.FC = () => {
     }
   };
 
+  const startQuickSetPassword = async (targetEmail: string) => {
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    if (!cleanEmail) return;
+    setError('');
+    setGoogleError('');
+    setNeedsGooglePrompt(false);
+    setLoading(true);
+    try {
+      setEmail(cleanEmail);
+      setMode('forgot');
+      setPassword('');
+      setResetCode('');
+      setSandboxResetHint('');
+      try {
+        const rtRes = await fetch('/api/runtime/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail }),
+        });
+        if (hasJsonContentType(rtRes) && rtRes.status < 500) {
+          const rtJson = await rtRes.json();
+          if (rtRes.ok) {
+            if (rtJson.sandboxCode) {
+              setSandboxResetHint(rtJson.sandboxCode);
+              setResetCode(rtJson.sandboxCode);
+            }
+            setResetStep('confirm');
+            notify('Set your new password below to enable direct Email sign-in.', 'info');
+            return;
+          }
+        }
+      } catch {
+        // fallback below
+      }
+      const fallback = staticForgotPassword(cleanEmail);
+      if (fallback.sandboxCode) {
+        setSandboxResetHint(fallback.sandboxCode);
+        setResetCode(fallback.sandboxCode);
+      }
+      setResetStep('confirm');
+      notify('Set your new password below to enable direct Email sign-in.', 'info');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setGoogleError('');
+    setNeedsGooglePrompt(false);
     setLoading(true);
     try {
       if (mode === 'login') {
@@ -208,7 +266,14 @@ export const AuthModal: React.FC = () => {
                 return;
               }
               if (rtJson.status === 'needs_google') {
-                setGoogleError(rtJson.message || 'Please click "Continue with Google" below.');
+                if (auth.currentUser && auth.currentUser.email?.toLowerCase() === cleanEmail) {
+                  await completeFirebaseCustomerSignIn(auth.currentUser);
+                  return;
+                }
+                setNeedsGooglePrompt(true);
+                setGoogleError(
+                  rtJson.message || 'This email was used with Google. Click "Set Password for Email Login" below.'
+                );
                 return;
               }
               setPasswordStep(true);
@@ -393,6 +458,18 @@ export const AuthModal: React.FC = () => {
             if (hasJsonContentType(rtRes) && rtRes.status < 500) {
               const rtJson = await rtRes.json();
               if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Reset failed.');
+              if (rtJson.user) {
+                saveStoredDeviceKey(email, rtJson.deviceKey);
+                const session = upsertStaticCustomerSession(rtJson.user, password);
+                await setCustomerSession(session.token, session.user);
+                setResetStep('request');
+                setSandboxResetHint('');
+                setMode('login');
+                setPasswordStep(false);
+                setIsAuthModalOpen(false);
+                notify(`Password saved & signed in! Welcome, ${session.user.name}.`, 'success');
+                return;
+              }
               setMode('login');
               setPasswordStep(true);
               setResetStep('request');
@@ -489,6 +566,7 @@ export const AuthModal: React.FC = () => {
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
+                  setNeedsGooglePrompt(false);
                   if (mode === 'login' && passwordStep) {
                     setPasswordStep(false);
                     setPassword('');
@@ -541,6 +619,22 @@ export const AuthModal: React.FC = () => {
 
             {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
 
+            {mode === 'login' && needsGooglePrompt && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 space-y-2">
+                <p className="font-medium">
+                  This email previously used Google Sign-In. Don&apos;t want Google/mobile-key prompt?
+                </p>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void startQuickSetPassword(email)}
+                  className="w-full h-9 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold text-xs transition-colors"
+                >
+                  Set Email Password Now (Skip Google)
+                </button>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading}
@@ -557,7 +651,7 @@ export const AuthModal: React.FC = () => {
                   ? 'Create Account'
                   : resetStep === 'request'
                   ? 'Send Reset Code'
-                  : 'Update Password'}
+                  : 'Update Password & Sign In'}
               </span>
               {!loading && mode === 'login' && !passwordStep && <ArrowRight className="w-4 h-4" />}
             </button>

@@ -230,3 +230,119 @@ export async function dispatchSupportTicketEmail(
     return { emailStatus: 'failed', provider: 'smtp' };
   }
 }
+
+export async function dispatchSupportReplyEmail(options: {
+  ticketId: string | number;
+  customerName: string;
+  customerEmail: string;
+  originalSubject: string;
+  originalMessage: string;
+  replyMessage: string;
+  supportEmail: string;
+  repliedAt: string;
+}): Promise<{
+  emailStatus: SupportEmailDeliveryStatus;
+  provider: 'resend' | 'smtp' | 'none';
+}> {
+  const status = getMailConfigStatus();
+  if (!status.configured) {
+    return { emailStatus: 'pending_smtp', provider: 'none' };
+  }
+
+  const cleanCustomerEmail = stripHeaderBreaks(options.customerEmail);
+  const cleanCustomerName = stripHeaderBreaks(options.customerName || 'Customer');
+  const cleanSubject = stripHeaderBreaks(options.originalSubject);
+  const cleanSupportEmail = stripHeaderBreaks(options.supportEmail);
+  const mailSubject = `Re: [AAGAMAN MART Support #${options.ticketId}] ${cleanSubject}`;
+
+  const textBody = [
+    `Hello ${cleanCustomerName},`,
+    ``,
+    `AAGAMAN MART Support has replied to your ticket (#${options.ticketId}):`,
+    `--------------------------------------------------`,
+    options.replyMessage,
+    ``,
+    `--------------------------------------------------`,
+    `Your original message (${options.repliedAt}):`,
+    options.originalMessage,
+    ``,
+    `You can reply directly to this email (${cleanSupportEmail}) or view updates at /support.`,
+  ].join('\n');
+
+  const htmlBody = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+      <div style="background: #0B1F3A; color: #ffffff; padding: 18px 24px;">
+        <h2 style="margin: 0; font-size: 18px;">AAGAMAN MART · Support Reply</h2>
+        <p style="margin: 4px 0 0; font-size: 12px; color: #cbd5e1;">Ticket #${escapeHtml(String(options.ticketId))} · ${escapeHtml(cleanSubject)}</p>
+      </div>
+      <div style="padding: 20px 24px; color: #1e293b; font-size: 14px; line-height: 1.55;">
+        <p style="margin: 0 0 12px;">Hello <strong>${escapeHtml(cleanCustomerName)}</strong>,</p>
+        <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 14px; white-space: pre-wrap; color: #0B1F3A;">${escapeHtml(options.replyMessage)}</div>
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
+          <p style="margin: 0 0 4px;"><strong>Your Original Query:</strong></p>
+          <p style="margin: 0; white-space: pre-wrap;">${escapeHtml(options.originalMessage)}</p>
+        </div>
+        <p style="margin: 16px 0 0; font-size: 12px; color: #64748b;">Reply to this email (${escapeHtml(cleanSupportEmail)}) anytime for further help.</p>
+      </div>
+    </div>
+  `;
+
+  if (status.provider === 'resend') {
+    try {
+      const fromAddr =
+        process.env.SMTP_FROM?.trim() || 'AAGAMAN MART Support <onboarding@resend.dev>';
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.RESEND_API_KEY!.trim()}`,
+        },
+        body: JSON.stringify({
+          from: fromAddr,
+          to: [cleanCustomerEmail],
+          reply_to: cleanSupportEmail,
+          subject: mailSubject,
+          text: textBody,
+          html: htmlBody,
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error('Resend reply email error:', res.status, errText);
+        return { emailStatus: 'failed', provider: 'resend' };
+      }
+      return { emailStatus: 'sent', provider: 'resend' };
+    } catch (error) {
+      console.error('Resend reply dispatch failed:', error);
+      return { emailStatus: 'failed', provider: 'resend' };
+    }
+  }
+
+  try {
+    const smtp = getResolvedSmtpConfig();
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.port === 465,
+      auth: {
+        user: smtp.user,
+        pass: smtp.pass,
+      },
+    });
+    const fromAddr =
+      process.env.SMTP_FROM?.trim() ||
+      `AAGAMAN MART Support <${smtp.user}>`;
+    await transporter.sendMail({
+      from: fromAddr,
+      to: cleanCustomerEmail,
+      replyTo: cleanSupportEmail,
+      subject: mailSubject,
+      text: textBody,
+      html: htmlBody,
+    });
+    return { emailStatus: 'sent', provider: 'smtp' };
+  } catch (error) {
+    console.error('SMTP reply dispatch failed:', error);
+    return { emailStatus: 'failed', provider: 'smtp' };
+  }
+}

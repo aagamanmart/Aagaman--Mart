@@ -116,6 +116,15 @@ export interface StaticReturnRecord {
   createdAt: string;
 }
 
+export interface StaticTicketReply {
+  replyId: string;
+  senderRole: 'admin' | 'customer';
+  senderName: string;
+  message: string;
+  emailStatus?: string;
+  createdAt: string;
+}
+
 export interface StaticTicketRecord {
   id: number;
   ticketId?: string;
@@ -127,6 +136,7 @@ export interface StaticTicketRecord {
   status: string;
   routedToEmail?: string;
   emailStatus?: string;
+  replies?: StaticTicketReply[];
   createdAt: string;
 }
 
@@ -1599,6 +1609,14 @@ export function clearSavedStaticCustomerSession() {
   }
 }
 
+function safeSetAuthSessionToken(token: string) {
+  try {
+    localStorage.setItem(AUTH_SESSION_KEY, token);
+  } catch {
+    // ignore strict browser storage limits
+  }
+}
+
 export function staticRegisterCustomer(payload: { name: string; email: string; phone?: string; password: string }) {
   const dbState = loadStaticDb();
   const normalized = payload.email.trim().toLowerCase();
@@ -1639,7 +1657,7 @@ export function staticRegisterCustomer(payload: { name: string; email: string; p
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
   const token = `static_cust_${id}`;
-  localStorage.setItem(AUTH_SESSION_KEY, token);
+  safeSetAuthSessionToken(token);
   return { token, user: sanitizeCustomer(customer) };
 }
 
@@ -1686,7 +1704,7 @@ export function staticLoginCustomer(email: string, password: string) {
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
   const token = `static_cust_${customer.id}`;
-  localStorage.setItem(AUTH_SESSION_KEY, token);
+  safeSetAuthSessionToken(token);
   return { token, user: sanitizeCustomer(customer) };
 }
 
@@ -1708,7 +1726,7 @@ export function staticEmailContinue(email: string):
     saveStaticDb(dbState);
     void syncStaticCustomerToServer(existing);
     const token = `static_cust_${existing.id}`;
-    localStorage.setItem(AUTH_SESSION_KEY, token);
+    safeSetAuthSessionToken(token);
     return { status: 'logged_in', token, user: sanitizeCustomer(existing) };
   }
   const id = (dbState.customers.reduce((m, c) => Math.max(m, c.id), 0) || 0) + 1;
@@ -1736,7 +1754,7 @@ export function staticEmailContinue(email: string):
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
   const token = `static_cust_${id}`;
-  localStorage.setItem(AUTH_SESSION_KEY, token);
+  safeSetAuthSessionToken(token);
   return { status: 'logged_in', token, user: sanitizeCustomer(customer) };
 }
 
@@ -1786,7 +1804,7 @@ export function staticSyncFirebaseCustomer(fb: {
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
   const token = `static_cust_${customer.id}`;
-  localStorage.setItem(AUTH_SESSION_KEY, token);
+  safeSetAuthSessionToken(token);
   return { token, user: sanitizeCustomer(customer) };
 }
 
@@ -1837,7 +1855,7 @@ export function upsertStaticCustomerSession(
 
   saveStaticDb(dbState);
   const token = `static_cust_${customer.id}`;
-  localStorage.setItem(AUTH_SESSION_KEY, token);
+  safeSetAuthSessionToken(token);
   return { token, user: sanitizeCustomer(customer) };
 }
 
@@ -2872,4 +2890,40 @@ export function updateStaticAdminTicketStatus(ticketId: number, status: string) 
     t.status = status;
     saveStaticDb(dbState);
   }
+}
+
+export function addStaticAdminTicketReply(
+  ticketIdOrRef: string | number,
+  reply: StaticTicketReply,
+  nextStatus?: string
+) {
+  const dbState = loadStaticDb();
+  const refStr = String(ticketIdOrRef);
+  const numId = Number(ticketIdOrRef);
+  const t = dbState.tickets.find(
+    (tk) => tk.ticketId === refStr || (!Number.isNaN(numId) && numId > 0 && tk.id === numId)
+  );
+  if (t) {
+    const existing = Array.isArray(t.replies) ? t.replies : [];
+    if (!existing.some((r) => r.replyId === reply.replyId)) {
+      t.replies = [...existing, reply];
+    }
+    if (nextStatus) {
+      t.status = nextStatus;
+    } else if (t.status === 'Open') {
+      t.status = 'In Progress';
+    }
+    saveStaticDb(dbState);
+  }
+}
+
+export function getStaticCustomerTickets(email?: string, ticketIds: string[] = []): StaticTicketRecord[] {
+  const cleanEmail = email?.trim().toLowerCase() || '';
+  const idSet = new Set(ticketIds);
+  if (!cleanEmail && idSet.size === 0) return [];
+  return loadStaticDb().tickets.filter((tk) => {
+    if (cleanEmail && tk.email.toLowerCase() === cleanEmail) return true;
+    if (tk.ticketId && idSet.has(tk.ticketId)) return true;
+    return false;
+  });
 }

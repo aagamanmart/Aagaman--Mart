@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { isDbConfigured } from '../../db/index.ts';
 import { createRateLimiter, hashPassword, verifyPassword, verifyToken } from '../../lib/security.ts';
 import {
+  dispatchSupportReplyEmail,
   dispatchSupportTicketEmail,
   getMailConfigStatus,
   resolveLiveSupportEmail,
@@ -66,6 +67,15 @@ export interface RuntimeReviewItem {
   createdAt: string;
 }
 
+export interface RuntimeSupportReply {
+  replyId: string;
+  senderRole: 'admin';
+  senderName: string;
+  message: string;
+  emailStatus: SupportEmailDeliveryStatus;
+  createdAt: string;
+}
+
 export interface RuntimeSupportTicket {
   id: number;
   ticketId: string;
@@ -77,6 +87,8 @@ export interface RuntimeSupportTicket {
   status: 'Open' | 'In Progress' | 'Resolved';
   routedToEmail: string;
   emailStatus: SupportEmailDeliveryStatus;
+  replies?: RuntimeSupportReply[];
+  accessKeyHash?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -125,6 +137,14 @@ function verifyDeviceKey(deviceKey: string, storedHash?: string): boolean {
 function sanitizeRuntimeCustomer(c: RuntimeCustomerRecord) {
   const { passwordHash: _ph, deviceKeyHash: _dk, pendingResetCode: _prc, resetExpiresAt: _rea, ...safe } = c;
   return safe;
+}
+
+function sanitizeRuntimeTicket(t: RuntimeSupportTicket) {
+  const { accessKeyHash: _akh, ...safe } = t;
+  return {
+    ...safe,
+    replies: Array.isArray(t.replies) ? t.replies : [],
+  };
 }
 
 function ensureLoaded() {
@@ -383,11 +403,14 @@ runtimeRouter.post('/runtime/auth/email-continue', runtimeAuthLimiter, (req, res
     });
   }
 
-  if (existing.authMethod === 'google' && !existing.passwordHash) {
+  if (!existing.passwordHash) {
     return res.json({
       ok: true,
       status: 'needs_google',
-      message: 'This email uses Google Sign-In. Click "Continue with Google" or set a password via Forgot Password.',
+      message:
+        existing.authMethod === 'google'
+          ? 'This email previously signed in with Google. Click "Set Password for Email Login" below or use Google.'
+          : 'Set a quick password for this account or use quick code below.',
     });
   }
 
@@ -447,9 +470,17 @@ runtimeRouter.post('/runtime/auth/reset-password', runtimeAuthLimiter, (req, res
   existing.passwordHash = hashPassword(parsed.data.newPassword);
   existing.pendingResetCode = undefined;
   existing.resetExpiresAt = undefined;
+  const deviceKey = crypto.randomBytes(24).toString('hex');
+  existing.deviceKeyHash = hashDeviceKey(deviceKey);
+  existing.lastLoginAt = new Date().toISOString();
   customerMap.set(key, existing);
   persistToDisk();
-  return res.json({ ok: true, message: 'Password updated successfully.' });
+  return res.json({
+    ok: true,
+    message: 'Password updated successfully.',
+    user: sanitizeRuntimeCustomer(existing),
+    deviceKey,
+  });
 });
 
 const syncCustomerSchema = z.object({
@@ -685,6 +716,7 @@ runtimeRouter.post('/runtime/support', runtimeAuthLimiter, async (req, res) => {
     targetSupportEmail
   );
 
+  const accessKey = crypto.randomBytes(16).toString('hex');
   const created: RuntimeSupportTicket = {
     id: nextId,
     ticketId,
@@ -696,6 +728,8 @@ runtimeRouter.post('/runtime/support', runtimeAuthLimiter, async (req, res) => {
     status: 'Open',
     routedToEmail: targetSupportEmail,
     emailStatus: mailResult.emailStatus,
+    replies: [],
+    accessKeyHash: hashDeviceKey(accessKey),
     createdAt: now,
     updatedAt: now,
   };
@@ -706,7 +740,8 @@ runtimeRouter.post('/runtime/support', runtimeAuthLimiter, async (req, res) => {
   return res.status(201).json({
     ok: true,
     ticketId: nextId,
-    ticket: created,
+    ticket: sanitizeRuntimeTicket(created),
+    accessKey,
     routedToEmail: targetSupportEmail,
     emailStatus: mailResult.emailStatus,
     mailConfigured: mailResult.provider !== 'none',
@@ -724,7 +759,7 @@ runtimeRouter.get('/runtime/support', requireRuntimeAdmin, async (_req, res) => 
   });
   const mailStatus = getMailConfigStatus();
   res.json({
-    tickets: runtimeTickets,
+    tickets: runtimeTickets.map(sanitizeRuntimeTicket),
     activeSupportEmail,
     mailConfigured: mailStatus.configured,
     provider: mailStatus.provider,
@@ -752,7 +787,129 @@ runtimeRouter.patch('/runtime/support/:id', requireRuntimeAdmin, (req, res) => {
     return res.status(404).json({ error: 'Support ticket not found.' });
   }
   persistToDisk();
-  return res.json({ ok: true, ticket: updated });
+  return res.json({ ok: true, ticket: sanitizeRuntimeTicket(updated) });
+});
+
+runtimeRouter.post('/runtime/support/:id/reply', requireRuntimeAdmin, runtimeAuthLimiter, async (req, res) => {
+  ensureLoaded();
+  const idParam = String(req.params.id || '').trim();
+  const schema = z.object({
+    message: z.string().trim().min(1).max(2000),
+    status: z.enum(['Open', 'In Progress', 'Resolved']).optional(),
+    senderName: z.string().trim().min(1).max(120).optional().default('AAGAMAN MART Support'),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!idParam || !parsed.success) {
+    return res.status(400).json({ error: 'Please write a valid reply message.' });
+  }
+
+  const targetTicket = runtimeTickets.find((t) => String(t.id) === idParam || t.ticketId === idParam);
+  if (!targetTicket) {
+    return res.status(404).json({ error: 'Support ticket not found.' });
+  }
+
+  const activeSupportEmail = await resolveLiveSupportEmail({
+    runtimeSupportEmail: runtimeConfig?.supportEmail,
+  });
+  const now = new Date().toISOString();
+  const mailResult = await dispatchSupportReplyEmail({
+    ticketId: targetTicket.id,
+    customerName: targetTicket.name,
+    customerEmail: targetTicket.email,
+    originalSubject: targetTicket.subject,
+    originalMessage: targetTicket.message,
+    replyMessage: parsed.data.message,
+    supportEmail: activeSupportEmail,
+    repliedAt: now,
+  });
+
+  const reply: RuntimeSupportReply = {
+    replyId: `RPL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+    senderRole: 'admin',
+    senderName: parsed.data.senderName,
+    message: parsed.data.message,
+    emailStatus: mailResult.emailStatus,
+    createdAt: now,
+  };
+
+  const nextStatus =
+    parsed.data.status || (targetTicket.status === 'Open' ? 'In Progress' : targetTicket.status);
+
+  let updatedTicket: RuntimeSupportTicket | null = null;
+  runtimeTickets = runtimeTickets.map((t) => {
+    if (String(t.id) === idParam || t.ticketId === idParam) {
+      updatedTicket = {
+        ...t,
+        status: nextStatus,
+        replies: [...(Array.isArray(t.replies) ? t.replies : []), reply].slice(-50),
+        updatedAt: now,
+      };
+      return updatedTicket;
+    }
+    return t;
+  });
+
+  persistToDisk();
+
+  return res.status(201).json({
+    ok: true,
+    reply,
+    ticket: sanitizeRuntimeTicket(updatedTicket!),
+    emailStatus: mailResult.emailStatus,
+    mailConfigured: mailResult.provider !== 'none',
+    message:
+      mailResult.emailStatus === 'sent'
+        ? `Reply saved in Admin Panel & emailed to ${targetTicket.email}.`
+        : `Reply saved in Admin & Customer Support Portal (configure SMTP secrets to auto-email ${targetTicket.email}).`,
+  });
+});
+
+runtimeRouter.post('/runtime/support/my-tickets', runtimeAuthLimiter, (req, res) => {
+  ensureLoaded();
+  const schema = z.object({
+    email: z.string().trim().email().optional(),
+    deviceKey: z.string().trim().max(200).optional(),
+    ticketAccesses: z
+      .array(
+        z.object({
+          ticketId: z.string().trim().min(1).max(128),
+          accessKey: z.string().trim().min(8).max(128),
+        })
+      )
+      .max(50)
+      .optional()
+      .default([]),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Invalid ticket lookup request.' });
+  }
+
+  const verifiedEmail = (() => {
+    const email = parsed.data.email?.toLowerCase();
+    const deviceKey = parsed.data.deviceKey;
+    if (!email || !deviceKey) return null;
+    const customer = customerMap.get(email);
+    if (!customer || customer.isBlocked) return null;
+    return verifyDeviceKey(deviceKey, customer.deviceKeyHash) ? email : null;
+  })();
+
+  const accessMap = new Map<string, string>();
+  for (const item of parsed.data.ticketAccesses) {
+    accessMap.set(item.ticketId, item.accessKey);
+  }
+
+  const matched = runtimeTickets
+    .filter((t) => {
+      if (verifiedEmail && t.email.toLowerCase() === verifiedEmail) {
+        return true;
+      }
+      const key = accessMap.get(t.ticketId) || accessMap.get(String(t.id));
+      return Boolean(key && verifyDeviceKey(key, t.accessKeyHash));
+    })
+    .map(sanitizeRuntimeTicket);
+
+  return res.json({ tickets: matched });
 });
 
 runtimeRouter.post('/runtime/support/test-email', requireRuntimeAdmin, runtimeAuthLimiter, async (_req, res) => {
