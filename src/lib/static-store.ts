@@ -1281,6 +1281,30 @@ export async function checkAuthenticPincode(
     const res = await fetch(`/api/pincode/${encodeURIComponent(code)}?method=${methodParam}`);
     if (hasJsonContentType(res) && res.status < 500) {
       const json = (await res.json()) as PincodeCheckResult;
+      if (json.noMatch) {
+        return json;
+      }
+      if (configOverride?.deliveryConfig && (json.city || json.postOfficeName || json.state)) {
+        return resolvePincodeDelivery(
+          code,
+          {
+            found: true,
+            postOffice: {
+              name: json.postOfficeName || json.city || '',
+              district: json.city || '',
+              state: json.state || '',
+              region: json.region || '',
+              circle: '',
+              deliveryStatus: json.serviceable ? json.deliveryStatus : 'Delivery',
+              pincode: code,
+              postOfficeCount: 1,
+            },
+          },
+          deliveryConfig,
+          shippingMethod,
+          includeYear
+        );
+      }
       return json;
     }
   } catch {

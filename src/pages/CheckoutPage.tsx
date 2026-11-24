@@ -816,7 +816,7 @@ export const CheckoutPage: React.FC = () => {
                       <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
                       <div>
                         <p className="font-semibold">
-                          Verified: {standardPinCheck.region} · Est. Delivery by {standardPinCheck.estimatedDelivery}
+                          Location Verified: {standardPinCheck.region} · Est. Delivery by {standardPinCheck.estimatedDelivery}
                         </p>
                         <p className="text-[11px] text-emerald-700">
                           {standardPinCheck.courierPartner} ·{' '}

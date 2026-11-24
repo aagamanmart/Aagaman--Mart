@@ -489,8 +489,11 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
                     </span>
                   </span>
                 </p>
+                <p className="text-slate-700">
+                  Location: <strong className="text-[#0B1F3A]">{pincodeResult.region}</strong>
+                </p>
                 <p className="text-slate-600">
-                  <strong className="text-[#0B1F3A]">{pincodeResult.region}</strong> · {pincodeResult.courierPartner} ·{' '}
+                  Courier: {pincodeResult.courierPartner} ·{' '}
                   {pincodeResult.codAvailable ? 'Cash on Delivery Available' : 'Prepaid Only'}
                 </p>
                 {pincodeResult.cutoffNote && (

@@ -620,15 +620,18 @@ export const AccountPage: React.FC = () => {
                   if (res.serviceable) {
                     setNewAddr((prev) => ({
                       ...prev,
-                      city: prev.city || res.city,
-                      state: prev.state || res.state,
+                      city: res.city || prev.city,
+                      state: res.state || prev.state,
                     }));
                     setAddrPinFeedback({
                       ok: true,
-                      msg: `${res.region} · Est. Delivery by ${res.estimatedDelivery}`,
+                      msg: `Location: ${res.region} · Est. Delivery by ${res.estimatedDelivery}`,
                     });
                   } else {
-                    setAddrPinFeedback({ ok: false, msg: res.error });
+                    setAddrPinFeedback({
+                      ok: false,
+                      msg: res.noMatch ? `No Match — ${res.error}` : res.error,
+                    });
                   }
                 }
               }}

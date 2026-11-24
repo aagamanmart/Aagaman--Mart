@@ -196,7 +196,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const fsCfg = await fetchFirestoreStoreConfig();
       if (fsCfg) {
-        resolvedConfig = { ...resolvedConfig, ...fsCfg };
+        resolvedConfig = {
+          ...resolvedConfig,
+          ...fsCfg,
+          deliveryConfig: fsCfg.deliveryConfig || resolvedConfig.deliveryConfig,
+        };
       }
     } catch {
       // ignore Firestore config errors when offline
