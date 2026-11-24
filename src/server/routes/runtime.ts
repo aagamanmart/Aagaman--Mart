@@ -5,6 +5,12 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import { isDbConfigured } from '../../db/index.ts';
 import { createRateLimiter, hashPassword, verifyPassword, verifyToken } from '../../lib/security.ts';
+import {
+  dispatchSupportTicketEmail,
+  getMailConfigStatus,
+  resolveLiveSupportEmail,
+  type SupportEmailDeliveryStatus,
+} from '../lib/support-mailer.ts';
 
 export interface RuntimeCustomerRecord {
   id: number;
@@ -59,11 +65,27 @@ export interface RuntimeReviewItem {
   createdAt: string;
 }
 
+export interface RuntimeSupportTicket {
+  id: number;
+  ticketId: string;
+  name: string;
+  email: string;
+  phone: string;
+  subject: string;
+  message: string;
+  status: 'Open' | 'In Progress' | 'Resolved';
+  routedToEmail: string;
+  emailStatus: SupportEmailDeliveryStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface RuntimePersistedData {
   customers: RuntimeCustomerRecord[];
   config: Record<string, unknown> | null;
   productDiscounts?: Record<string, RuntimeProductDiscountOverride>;
   reviews?: RuntimeReviewItem[];
+  tickets?: RuntimeSupportTicket[];
 }
 
 const RUNTIME_STORE_FILE = path.resolve(process.cwd(), '.aagaman-runtime-store.json');
@@ -74,6 +96,7 @@ const customerMap = new Map<string, RuntimeCustomerRecord>();
 let runtimeConfig: Record<string, unknown> | null = null;
 let runtimeProductDiscounts: Record<string, RuntimeProductDiscountOverride> = {};
 let runtimeReviews: RuntimeReviewItem[] = [];
+let runtimeTickets: RuntimeSupportTicket[] = [];
 let loadedFromDisk = false;
 
 export function getRuntimeStoreConfig(): Record<string, unknown> | null {
@@ -115,6 +138,9 @@ function ensureLoaded() {
       if (Array.isArray(parsed.reviews)) {
         runtimeReviews = parsed.reviews;
       }
+      if (Array.isArray(parsed.tickets)) {
+        runtimeTickets = parsed.tickets;
+      }
     }
   } catch {
     // Ignore read errors in ephemeral environments
@@ -128,6 +154,7 @@ function persistToDisk() {
       config: runtimeConfig,
       productDiscounts: runtimeProductDiscounts,
       reviews: runtimeReviews,
+      tickets: runtimeTickets,
     };
     fs.writeFileSync(RUNTIME_STORE_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch {
@@ -509,4 +536,115 @@ runtimeRouter.post('/runtime/reviews', (req, res) => {
     persistToDisk();
   }
   res.status(201).json({ ok: true, review: reviewItem });
+});
+
+runtimeRouter.post('/runtime/support', runtimeAuthLimiter, async (req, res) => {
+  ensureLoaded();
+  const schema = z.object({
+    ticketId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,128}$/)
+      .optional(),
+    name: z.string().trim().min(2).max(160),
+    email: z.string().trim().email().max(200),
+    phone: z.string().trim().max(30).optional().default(''),
+    subject: z.string().trim().min(2).max(200),
+    message: z.string().trim().min(3).max(2000),
+    clientSupportEmail: z.string().trim().email().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Please complete Name, Email, Subject, and Message.' });
+  }
+
+  const targetSupportEmail = await resolveLiveSupportEmail({
+    runtimeSupportEmail: runtimeConfig?.supportEmail,
+    fallbackSupportEmail: parsed.data.clientSupportEmail,
+  });
+
+  const now = new Date().toISOString();
+  const nextId = (runtimeTickets.reduce((m, t) => Math.max(m, t.id), 0) || 100) + 1;
+  const ticketId = parsed.data.ticketId || `TKT-${nextId}-${Date.now().toString(36).toUpperCase()}`;
+
+  const mailResult = await dispatchSupportTicketEmail(
+    {
+      ticketId: nextId,
+      name: parsed.data.name,
+      email: parsed.data.email.toLowerCase(),
+      phone: parsed.data.phone,
+      subject: parsed.data.subject,
+      message: parsed.data.message,
+      createdAt: now,
+    },
+    targetSupportEmail
+  );
+
+  const created: RuntimeSupportTicket = {
+    id: nextId,
+    ticketId,
+    name: parsed.data.name,
+    email: parsed.data.email.toLowerCase(),
+    phone: parsed.data.phone,
+    subject: parsed.data.subject,
+    message: parsed.data.message,
+    status: 'Open',
+    routedToEmail: targetSupportEmail,
+    emailStatus: mailResult.emailStatus,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  runtimeTickets = [created, ...runtimeTickets].slice(0, 1000);
+  persistToDisk();
+
+  return res.status(201).json({
+    ok: true,
+    ticketId: nextId,
+    ticket: created,
+    routedToEmail: targetSupportEmail,
+    emailStatus: mailResult.emailStatus,
+    mailConfigured: mailResult.provider !== 'none',
+    message:
+      mailResult.emailStatus === 'sent'
+        ? `Support ticket #${nextId} submitted! Query sent directly to ${targetSupportEmail} and logged in Admin Support Channel.`
+        : `Support ticket #${nextId} submitted! Query logged in Admin Support Channel (routed to ${targetSupportEmail}).`,
+  });
+});
+
+runtimeRouter.get('/runtime/support', requireRuntimeAdmin, async (_req, res) => {
+  ensureLoaded();
+  const activeSupportEmail = await resolveLiveSupportEmail({
+    runtimeSupportEmail: runtimeConfig?.supportEmail,
+  });
+  const mailStatus = getMailConfigStatus();
+  res.json({
+    tickets: runtimeTickets,
+    activeSupportEmail,
+    mailConfigured: mailStatus.configured,
+    provider: mailStatus.provider,
+  });
+});
+
+runtimeRouter.patch('/runtime/support/:id', requireRuntimeAdmin, (req, res) => {
+  ensureLoaded();
+  const idParam = String(req.params.id || '').trim();
+  const schema = z.object({ status: z.enum(['Open', 'In Progress', 'Resolved']) });
+  const parsed = schema.safeParse(req.body);
+  if (!idParam || !parsed.success) {
+    return res.status(400).json({ error: 'Invalid support ticket status update.' });
+  }
+  const now = new Date().toISOString();
+  let updated: RuntimeSupportTicket | null = null;
+  runtimeTickets = runtimeTickets.map((t) => {
+    if (String(t.id) === idParam || t.ticketId === idParam) {
+      updated = { ...t, status: parsed.data.status, updatedAt: now };
+      return updated;
+    }
+    return t;
+  });
+  if (!updated) {
+    return res.status(404).json({ error: 'Support ticket not found.' });
+  }
+  persistToDisk();
+  return res.json({ ok: true, ticket: updated });
 });

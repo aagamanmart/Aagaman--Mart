@@ -7,6 +7,7 @@
 4. Customers cannot escalate privileges, modify `uid`, `email`, `authMethod`, `createdAt`, or clear `isBlocked` on update. Only `isAdmin()` may modify `isBlocked`.
 5. `/storeConfig/main` is publicly readable via `get` for storefront rendering (`announcementText`, `headquarters`, `supportEmail`, `banners`, `deliveryConfig`) and writable only by `isAdmin()` with strict schema and bounded array (`banners.size() <= 10`, `deliveryConfig.pincodeRules.size() <= 100`) checks.
 6. Client-supplied timestamps and shadow fields are rejected across all collections via `request.time` enforcement and `keys().hasAll(...) && keys().hasOnly(...)`.
+7. `/supportTickets/{ticketId}` documents require `isVerifiedUser()`, `uid == request.auth.uid`, `status == 'Open'`, bounded string lengths, and server `request.time` timestamps on `create`. Only the owning user or `isAdmin()` may read (`get`) a ticket; `list` is restricted to `isBootstrappedAdmin()` or `resource.data.uid == request.auth.uid`; only `isAdmin()` may update `status` and `updatedAt`.
 
 ## 2. Adversarial Payloads Covered ("Dirty Dozen")
 1. Unauthenticated `get` / `list` on `/customers/{uid}`.
@@ -20,4 +21,4 @@
 9. Customer `update` attempting to mutate `createdAt`, `uid`, or `email`.
 10. Customer `create` with oversized `name` (> 160 chars) or junk `customerId` (> 128 chars / invalid chars).
 11. Non-admin attempt to write `/storeConfig/main`.
-12. Non-admin attempt to write `/admins/{uid}` or create `/storeConfig/evil`.
+12. Non-admin attempt to write `/admins/{uid}`, create `/storeConfig/evil`, list `/supportTickets` without ownership filter, or forge `status: 'Resolved'` on `/supportTickets/{ticketId}`.

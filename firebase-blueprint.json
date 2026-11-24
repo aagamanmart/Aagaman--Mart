@@ -178,6 +178,86 @@
         }
       },
       "required": ["email"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support query routed to the live admin support email and admin support channel.",
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "message": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 2000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Open", "In Progress", "Resolved"]
+        },
+        "routedToEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "emailStatus": {
+          "type": "string",
+          "enum": ["sent", "pending_smtp", "failed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ticketId",
+        "uid",
+        "name",
+        "email",
+        "phone",
+        "subject",
+        "message",
+        "status",
+        "routedToEmail",
+        "emailStatus",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -192,6 +272,10 @@
     "/admins/{adminUid}": {
       "schema": { "$ref": "#/entities/AdminMember" },
       "description": "Admin role documents used by Firestore rules."
+    },
+    "/supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Verified customer support queries readable by the ticket author or store admin, updatable only by store admin."
     }
   }
 }

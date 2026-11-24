@@ -118,12 +118,15 @@ export interface StaticReturnRecord {
 
 export interface StaticTicketRecord {
   id: number;
+  ticketId?: string;
   name: string;
   email: string;
   phone: string;
   subject: string;
   message: string;
   status: string;
+  routedToEmail?: string;
+  emailStatus?: string;
   createdAt: string;
 }
 
@@ -1515,29 +1518,40 @@ export function subscribeStaticNewsletter(email: string) {
 }
 
 export function submitStaticSupportTicket(payload: {
+  id?: number;
+  ticketId?: string;
   name: string;
   email: string;
   phone?: string;
   subject: string;
   message: string;
+  routedToEmail?: string;
+  emailStatus?: string;
 }) {
   const dbState = loadStaticDb();
-  const id = (dbState.tickets.reduce((m, t) => Math.max(m, t.id), 0) || 100) + 1;
+  const id = payload.id || (dbState.tickets.reduce((m, t) => Math.max(m, t.id), 0) || 100) + 1;
+  const ticketId = payload.ticketId || `TKT-${id}-${Date.now().toString(36).toUpperCase()}`;
+  const routedToEmail = payload.routedToEmail || dbState.config.supportEmail || 'utkarshjaiswar137@gmail.com';
+  const emailStatus = payload.emailStatus || 'pending_smtp';
   dbState.tickets.unshift({
     id,
+    ticketId,
     name: payload.name,
     email: payload.email.toLowerCase(),
     phone: payload.phone || '',
     subject: payload.subject,
     message: payload.message,
     status: 'Open',
+    routedToEmail,
+    emailStatus,
     createdAt: new Date().toISOString(),
   });
   saveStaticDb(dbState);
   return {
     ok: true,
     ticketId: id,
-    message: `Support ticket #${id} submitted. Our team responds within 4 business hours.`,
+    routedToEmail,
+    message: `Support ticket #${id} submitted! Logged in Admin Support Channel (routed to ${routedToEmail}).`,
   };
 }
 

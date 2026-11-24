@@ -203,6 +203,49 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll([
+          'ticketId',
+          'uid',
+          'name',
+          'email',
+          'phone',
+          'subject',
+          'message',
+          'status',
+          'routedToEmail',
+          'emailStatus',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ticketId',
+          'uid',
+          'name',
+          'email',
+          'phone',
+          'subject',
+          'message',
+          'status',
+          'routedToEmail',
+          'emailStatus',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.ticketId)
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 160
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.phone is string && data.phone.size() <= 30
+        && data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 200
+        && data.message is string && data.message.size() >= 3 && data.message.size() <= 2000
+        && data.status is string && data.status in ['Open', 'In Progress', 'Resolved']
+        && data.routedToEmail is string && data.routedToEmail.size() >= 3 && data.routedToEmail.size() <= 200
+        && data.emailStatus is string && data.emailStatus in ['sent', 'pending_smtp', 'failed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /customers/{customerId} {
       allow get: if isSignedIn() && isValidId(customerId) && (isOwner(customerId) || isAdmin());
       allow list: if isBootstrappedAdmin();
@@ -261,6 +304,30 @@ service cloud.firestore {
         && configId == 'main'
         && isValidStoreConfig(incoming())
         && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow get: if isValidId(ticketId) && (isAdmin() || (isVerifiedUser() && existing().uid == request.auth.uid));
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.uid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(ticketId)
+        && isValidSupportTicket(incoming())
+        && incoming().ticketId == ticketId
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'Open'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(ticketId)
+        && isValidSupportTicket(incoming())
+        && isAdmin()
+        && incoming().ticketId == existing().ticketId
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
       allow delete: if false;
     }
 

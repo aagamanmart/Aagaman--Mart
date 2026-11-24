@@ -25,6 +25,7 @@ import {
 } from '../../db/schema.ts';
 import { createRateLimiter, hashPassword, signToken, verifyPassword } from '../../lib/security.ts';
 import { requireAdmin, type AuthRequest } from '../../middleware/auth.ts';
+import { getMailConfigStatus, resolveLiveSupportEmail } from '../lib/support-mailer.ts';
 
 export const adminRouter = Router();
 const adminLoginLimiter = createRateLimiter(60_000, 15);
@@ -841,8 +842,19 @@ adminRouter.put('/admin/settings', requireAdmin, async (req, res) => {
 });
 
 adminRouter.get('/admin/support-tickets', requireAdmin, async (_req, res) => {
-  const tickets = await db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt));
-  res.json({ tickets });
+  const [tickets, settingsRows] = await Promise.all([
+    db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt)),
+    db.select().from(siteSettings).where(eq(siteSettings.key, 'store_config')).limit(1),
+  ]);
+  const pgCfg = (settingsRows[0]?.value || {}) as Record<string, unknown>;
+  const activeSupportEmail = await resolveLiveSupportEmail({ pgSupportEmail: pgCfg.supportEmail });
+  const mailStatus = getMailConfigStatus();
+  res.json({
+    tickets: tickets.map((t) => ({ ...t, routedToEmail: activeSupportEmail })),
+    activeSupportEmail,
+    mailConfigured: mailStatus.configured,
+    provider: mailStatus.provider,
+  });
 });
 
 adminRouter.patch('/admin/support-tickets/:id', requireAdmin, async (req, res) => {

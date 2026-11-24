@@ -22,6 +22,7 @@ import {
 } from '../../lib/pincode.ts';
 import { optionalAuth, type AuthRequest } from '../../middleware/auth.ts';
 import type { DeliveryScheduleConfig } from '../../types.ts';
+import { dispatchSupportTicketEmail, getMailConfigStatus, resolveLiveSupportEmail } from '../lib/support-mailer.ts';
 import { getRuntimeStoreConfig } from './runtime.ts';
 
 export const storefrontRouter = Router();
@@ -371,11 +372,11 @@ storefrontRouter.post('/newsletter', async (req, res) => {
 
 storefrontRouter.post('/support', optionalAuth, async (req: AuthRequest, res) => {
   const schema = z.object({
-    name: z.string().min(2).max(120),
-    email: z.string().email(),
-    phone: z.string().max(20).optional().default(''),
-    subject: z.string().min(3).max(200),
-    message: z.string().min(10).max(2000),
+    name: z.string().trim().min(2).max(160),
+    email: z.string().trim().email().max(200),
+    phone: z.string().trim().max(30).optional().default(''),
+    subject: z.string().trim().min(2).max(200),
+    message: z.string().trim().min(3).max(2000),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -383,6 +384,17 @@ storefrontRouter.post('/support', optionalAuth, async (req: AuthRequest, res) =>
   }
 
   try {
+    const settingsRows = await db
+      .select()
+      .from(siteSettings)
+      .where(eq(siteSettings.key, 'store_config'))
+      .limit(1);
+    const pgConfig = (settingsRows[0]?.value || {}) as Record<string, unknown>;
+    const targetSupportEmail = await resolveLiveSupportEmail({
+      pgSupportEmail: pgConfig.supportEmail,
+      runtimeSupportEmail: getRuntimeStoreConfig()?.supportEmail,
+    });
+
     const [ticket] = await db
       .insert(supportTickets)
       .values({
@@ -395,10 +407,35 @@ storefrontRouter.post('/support', optionalAuth, async (req: AuthRequest, res) =>
       })
       .returning();
 
+    const mailResult = await dispatchSupportTicketEmail(
+      {
+        ticketId: ticket.id,
+        name: ticket.name,
+        email: ticket.email,
+        phone: ticket.phone || '',
+        subject: ticket.subject,
+        message: ticket.message,
+        createdAt: ticket.createdAt.toISOString(),
+      },
+      targetSupportEmail
+    );
+
+    const mailStatus = getMailConfigStatus();
     res.status(201).json({
       ok: true,
       ticketId: ticket.id,
-      message: `Support ticket #${ticket.id} submitted. Our team responds within 4 business hours.`,
+      routedToEmail: targetSupportEmail,
+      emailStatus: mailResult.emailStatus,
+      mailConfigured: mailStatus.configured,
+      ticket: {
+        ...ticket,
+        routedToEmail: targetSupportEmail,
+        emailStatus: mailResult.emailStatus,
+      },
+      message:
+        mailResult.emailStatus === 'sent'
+          ? `Support ticket #${ticket.id} submitted! Query sent to ${targetSupportEmail} and logged in Admin Support Channel.`
+          : `Support ticket #${ticket.id} submitted! Query logged in Admin Support Channel (routed to ${targetSupportEmail}).`,
     });
   } catch (error) {
     console.error('Support ticket error:', error);

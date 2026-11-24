@@ -42,9 +42,11 @@ import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   fetchFirestoreCustomersAsAdmin,
   fetchFirestoreStoreConfig,
+  fetchFirestoreSupportTicketsAsAdmin,
   isFirebaseBootstrappedAdmin,
   saveFirestoreStoreConfig,
   toggleFirestoreCustomerBlock,
+  updateFirestoreSupportTicketStatus,
 } from '../lib/firestore-sync';
 import {
   applyRuntimeCatalogSync,
@@ -225,7 +227,16 @@ export const AdminPage: React.FC = () => {
 
   // Dashboard tabs
   const [tab, setTab] = useState<
-    'overview' | 'products' | 'categories' | 'orders' | 'customers' | 'payments' | 'marketing' | 'delivery' | 'settings'
+    | 'overview'
+    | 'products'
+    | 'categories'
+    | 'orders'
+    | 'customers'
+    | 'payments'
+    | 'marketing'
+    | 'delivery'
+    | 'support'
+    | 'settings'
   >('overview');
 
   // Data states
@@ -297,9 +308,27 @@ export const AdminPage: React.FC = () => {
       isActive: boolean;
     }>
   >([]);
-  const [adminTickets, setAdminTickets] = useState<
-    Array<{ id: number; name: string; email: string; subject: string; message: string; status: string; createdAt: string }>
-  >([]);
+  interface AdminTicketItem {
+    id: number;
+    ticketId?: string;
+    name: string;
+    email: string;
+    phone?: string;
+    subject: string;
+    message: string;
+    status: string;
+    routedToEmail?: string;
+    emailStatus?: string;
+    createdAt: string;
+  }
+  const [adminTickets, setAdminTickets] = useState<AdminTicketItem[]>([]);
+  const [ticketSearch, setTicketSearch] = useState('');
+  const [ticketStatusFilter, setTicketStatusFilter] = useState<'all' | 'Open' | 'In Progress' | 'Resolved'>('all');
+  const [supportMailInfo, setSupportMailInfo] = useState<{
+    activeSupportEmail: string;
+    mailConfigured: boolean;
+    provider: string;
+  }>({ activeSupportEmail: 'utkarshjaiswar137@gmail.com', mailConfigured: false, provider: 'none' });
   const [settingsForm, setSettingsForm] = useState<StoreConfig>(() => getStaticAdminSettings());
   const [invoiceOrder, setInvoiceOrder] = useState<OrderRecord | null>(null);
 
@@ -449,12 +478,14 @@ export const AdminPage: React.FC = () => {
 
       setFirebaseAdminConnected(isFirebaseBootstrappedAdmin());
       try {
-        const [rtCustRes, rtCfgRes, rtCatRes, fsCustomers, fsConfig] = await Promise.all([
+        const [rtCustRes, rtCfgRes, rtCatRes, rtSuppRes, fsCustomers, fsConfig, fsTickets] = await Promise.all([
           fetch('/api/runtime/customers', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
           fetch('/api/runtime/config').catch(() => null),
           fetch('/api/runtime/catalog').catch(() => null),
+          fetch('/api/runtime/support', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
           fetchFirestoreCustomersAsAdmin().catch(() => [] as AdminCustomerItem[]),
           fetchFirestoreStoreConfig().catch(() => null),
+          fetchFirestoreSupportTicketsAsAdmin().catch(() => [] as AdminTicketItem[]),
         ]);
         if (rtCatRes && isJsonApiResponse(rtCatRes)) {
           const rtCatJson = await rtCatRes.json();
@@ -464,6 +495,41 @@ export const AdminPage: React.FC = () => {
           });
           setAdminProducts(getStaticAdminProducts());
         }
+
+        const mergedTicketsMap = new Map<string, AdminTicketItem>();
+        const mergeTicket = (t: AdminTicketItem) => {
+          const key = t.ticketId || `${t.email.toLowerCase()}|${t.subject.trim()}|${t.message.slice(0, 40)}`;
+          const prev = mergedTicketsMap.get(key);
+          if (!prev) {
+            mergedTicketsMap.set(key, t);
+          } else {
+            mergedTicketsMap.set(key, {
+              ...prev,
+              ...t,
+              id: prev.id || t.id,
+              phone: t.phone || prev.phone,
+              routedToEmail: t.routedToEmail || prev.routedToEmail,
+              emailStatus: t.emailStatus === 'sent' ? 'sent' : t.emailStatus || prev.emailStatus,
+            });
+          }
+        };
+        for (const lt of getStaticAdminTickets()) mergeTicket(lt);
+        if (rtSuppRes && isJsonApiResponse(rtSuppRes)) {
+          const rtSuppJson = await rtSuppRes.json();
+          const rtList: AdminTicketItem[] = Array.isArray(rtSuppJson.tickets) ? rtSuppJson.tickets : [];
+          for (const rt of rtList) mergeTicket(rt);
+          setSupportMailInfo({
+            activeSupportEmail: rtSuppJson.activeSupportEmail || localSettings.supportEmail || 'utkarshjaiswar137@gmail.com',
+            mailConfigured: Boolean(rtSuppJson.mailConfigured),
+            provider: String(rtSuppJson.provider || 'none'),
+          });
+        }
+        for (const ft of fsTickets) mergeTicket(ft);
+        setAdminTickets(
+          Array.from(mergedTicketsMap.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          )
+        );
 
         const byEmail = new Map<string, AdminCustomerItem>();
         const mergeCustomer = (incomingCust: AdminCustomerItem) => {
@@ -573,11 +639,22 @@ export const AdminPage: React.FC = () => {
       const serverCfg = (await setRes.json()).config || {};
       setSettingsForm({ ...getStaticAdminSettings(), ...serverCfg });
     }
-    if (isJsonApiResponse(tickRes)) setAdminTickets((await tickRes.json()).tickets || []);
+    if (isJsonApiResponse(tickRes)) {
+      const tickJson = await tickRes.json();
+      setAdminTickets(tickJson.tickets || []);
+      setSupportMailInfo({
+        activeSupportEmail: tickJson.activeSupportEmail || getStaticAdminSettings().supportEmail || 'utkarshjaiswar137@gmail.com',
+        mailConfigured: Boolean(tickJson.mailConfigured),
+        provider: String(tickJson.provider || 'none'),
+      });
+    }
   }, []);
 
   useEffect(() => {
-    if (adminToken && (tab === 'customers' || tab === 'overview' || tab === 'orders')) {
+    if (
+      adminToken &&
+      (tab === 'customers' || tab === 'overview' || tab === 'orders' || tab === 'support' || tab === 'settings')
+    ) {
       loadAllAdminData(adminToken);
     }
   }, [tab, adminToken, loadAllAdminData]);
@@ -1170,7 +1247,13 @@ export const AdminPage: React.FC = () => {
             { id: 'payments', label: 'Payments Ledger', icon: CreditCard },
             { id: 'marketing', label: 'Coupons & Banners', icon: Tag },
             { id: 'delivery', label: 'Delivery & Pincodes', icon: Truck },
-            { id: 'settings', label: 'Settings & Support', icon: Settings },
+            {
+              id: 'support',
+              label: 'Support Inbox',
+              icon: MessageSquare,
+              badge: adminTickets.filter((t) => t.status === 'Open').length,
+            },
+            { id: 'settings', label: 'Settings & Store', icon: Settings },
           ].map((item) => {
             const Icon = item.icon;
             return (
@@ -1178,14 +1261,25 @@ export const AdminPage: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => setTab(item.id as typeof tab)}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                className={`flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
                   tab === item.id
                     ? 'bg-[#EA580C] text-white'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                 }`}
               >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span>{item.label}</span>
+                <span className="flex items-center gap-2.5">
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </span>
+                {'badge' in item && typeof item.badge === 'number' && item.badge > 0 && (
+                  <span
+                    className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold font-mono ${
+                      tab === item.id ? 'bg-white text-[#EA580C]' : 'bg-[#EA580C] text-white'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -3049,7 +3143,7 @@ export const AdminPage: React.FC = () => {
               </div>
               <div className="grid sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-500 mb-1">Support Email Address</label>
+                  <label className="block text-slate-500 mb-1">Support &amp; Query Receiver Email</label>
                   <input
                     type="email"
                     required
@@ -3058,6 +3152,9 @@ export const AdminPage: React.FC = () => {
                     placeholder="support@aagamanmart.in"
                     className="w-full h-9 px-3 rounded-lg border border-slate-300"
                   />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Changing this email automatically routes all future customer support queries to the new address.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-slate-500 mb-1">Support Phone</label>
@@ -3164,29 +3261,50 @@ export const AdminPage: React.FC = () => {
               </div>
             </form>
 
-            {/* Support Tickets */}
+            {/* Support Tickets Quick Preview */}
             <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-3 text-xs">
-              <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-[#EA580C]" /> Customer Support Tickets ({adminTickets.length})
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-[#EA580C]" /> Customer Support Tickets ({adminTickets.length})
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setTab('support')}
+                  className="text-xs font-semibold text-[#EA580C] hover:underline"
+                >
+                  Open Support Channel →
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Active Query Email: <strong className="text-[#0B1F3A] font-mono">{settingsForm.supportEmail || supportMailInfo.activeSupportEmail}</strong>
+              </p>
               {adminTickets.length === 0 ? (
                 <p className="text-slate-500">No support tickets yet.</p>
               ) : (
                 <div className="divide-y divide-slate-100">
-                  {adminTickets.map((t) => (
-                    <div key={t.id} className="py-3 space-y-1.5">
-                      <div className="flex justify-between items-center">
-                        <span className="font-bold text-[#0B1F3A]">{t.subject}</span>
+                  {adminTickets.slice(0, 6).map((t) => (
+                    <div key={`${t.ticketId || t.id}`} className="py-3 space-y-1.5">
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="font-bold text-[#0B1F3A] truncate">{t.subject}</span>
                         <select
                           value={t.status}
                           onChange={async (e) => {
+                            const nextStatus = e.target.value as 'Open' | 'In Progress' | 'Resolved';
                             if (isStaticToken(adminToken)) {
-                              updateStaticAdminTicketStatus(t.id, e.target.value);
+                              updateStaticAdminTicketStatus(t.id, nextStatus);
+                              await fetch(`/api/runtime/support/${encodeURIComponent(t.ticketId || String(t.id))}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                                body: JSON.stringify({ status: nextStatus }),
+                              }).catch(() => {});
+                              if (t.ticketId) {
+                                await updateFirestoreSupportTicketStatus(t.ticketId, nextStatus).catch(() => {});
+                              }
                             } else {
                               await fetch(`/api/admin/support-tickets/${t.id}`, {
                                 method: 'PATCH',
                                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-                                body: JSON.stringify({ status: e.target.value }),
+                                body: JSON.stringify({ status: nextStatus }),
                               });
                             }
                             loadAllAdminData(adminToken);
@@ -3200,7 +3318,7 @@ export const AdminPage: React.FC = () => {
                       </div>
                       <p className="text-slate-600">{t.message}</p>
                       <p className="text-slate-400">
-                        {t.name} ({t.email})
+                        {t.name} ({t.email}){t.phone ? ` · ${t.phone}` : ''}
                       </p>
                     </div>
                   ))}
@@ -3210,6 +3328,208 @@ export const AdminPage: React.FC = () => {
 
             {/* Homepage Hero Banners Manager */}
             {renderHeroBannersEditor()}
+          </div>
+        )}
+
+        {/* DEDICATED SUPPORT INBOX CHANNEL */}
+        {tab === 'support' && (
+          <div className="space-y-5 text-xs">
+            {/* Live Routing & Email Status Card */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4 text-[#EA580C]" /> Customer Support Channel &amp; Mail Routing
+                  </h2>
+                  {supportMailInfo.mailConfigured ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-semibold">
+                      Auto-Email Active ({supportMailInfo.provider.toUpperCase()})
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold">
+                      Live Admin Channel Active · Add SMTP/Resend Secret for Auto-Inbox Email
+                    </span>
+                  )}
+                </div>
+                <p className="text-slate-600">
+                  Every customer support query submitted on <code className="font-mono bg-slate-100 px-1 rounded">/support</code> appears here immediately and routes to your active support email:{' '}
+                  <strong className="text-[#0B1F3A] font-mono">
+                    {settingsForm.supportEmail || supportMailInfo.activeSupportEmail}
+                  </strong>
+                </p>
+                {!supportMailInfo.mailConfigured && (
+                  <p className="text-[11px] text-slate-500">
+                    To forward every query straight into your Gmail/Mail inbox automatically, configure{' '}
+                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_HOST</code> (e.g. <code className="font-mono">smtp.gmail.com</code>),{' '}
+                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_PORT</code> (<code className="font-mono">465</code>),{' '}
+                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_USER</code>, and{' '}
+                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_PASS</code> (or <code className="font-mono bg-slate-100 px-1 rounded">RESEND_API_KEY</code>) in environment secrets.
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setTab('settings')}
+                  className="px-3.5 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 font-semibold text-[#0B1F3A]"
+                >
+                  Change Receiver Email
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adminToken && loadAllAdminData(adminToken)}
+                  className="px-4 h-9 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold"
+                >
+                  Refresh Inbox
+                </button>
+              </div>
+            </div>
+
+            {/* Filter & Search Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {(['all', 'Open', 'In Progress', 'Resolved'] as const).map((statusKey) => {
+                  const count =
+                    statusKey === 'all'
+                      ? adminTickets.length
+                      : adminTickets.filter((t) => t.status === statusKey).length;
+                  return (
+                    <button
+                      key={statusKey}
+                      type="button"
+                      onClick={() => setTicketStatusFilter(statusKey)}
+                      className={`px-3 py-1.5 rounded-lg font-semibold border transition-colors ${
+                        ticketStatusFilter === statusKey
+                          ? 'bg-[#0B1F3A] text-white border-[#0B1F3A]'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-[#EA580C]'
+                      }`}
+                    >
+                      {statusKey === 'all' ? 'All Queries' : statusKey} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="relative w-full sm:w-72">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  value={ticketSearch}
+                  onChange={(e) => setTicketSearch(e.target.value)}
+                  placeholder="Search customer, email, subject..."
+                  className="w-full h-9 pl-8 pr-3 rounded-lg border border-slate-300 bg-white"
+                />
+              </div>
+            </div>
+
+            {/* Tickets List */}
+            {adminTickets.filter((t) => {
+              if (ticketStatusFilter !== 'all' && t.status !== ticketStatusFilter) return false;
+              const q = ticketSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                t.name.toLowerCase().includes(q) ||
+                t.email.toLowerCase().includes(q) ||
+                t.subject.toLowerCase().includes(q) ||
+                t.message.toLowerCase().includes(q) ||
+                (t.phone || '').toLowerCase().includes(q)
+              );
+            }).length === 0 ? (
+              <div className="bg-white border border-slate-200 rounded-xl p-10 text-center space-y-2">
+                <MessageSquare className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="font-display text-sm font-bold text-[#0B1F3A]">No support queries matching this filter</p>
+                <p className="text-slate-500">
+                  Customer tickets submitted on the Support page appear here automatically.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {adminTickets
+                  .filter((t) => {
+                    if (ticketStatusFilter !== 'all' && t.status !== ticketStatusFilter) return false;
+                    const q = ticketSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      t.name.toLowerCase().includes(q) ||
+                      t.email.toLowerCase().includes(q) ||
+                      t.subject.toLowerCase().includes(q) ||
+                      t.message.toLowerCase().includes(q) ||
+                      (t.phone || '').toLowerCase().includes(q)
+                    );
+                  })
+                  .map((t) => (
+                    <div key={`${t.ticketId || t.id}`} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-slate-100 text-[#0B1F3A]">
+                              #{t.id}
+                            </span>
+                            <h3 className="font-display text-sm font-bold text-[#0B1F3A]">{t.subject}</h3>
+                            {t.emailStatus === 'sent' ? (
+                              <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-semibold">
+                                Emailed to {t.routedToEmail || settingsForm.supportEmail}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-orange-50 border border-orange-200 text-[#EA580C] text-[10px] font-semibold">
+                                Target Mail: {t.routedToEmail || settingsForm.supportEmail || supportMailInfo.activeSupportEmail}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>
+                              <strong className="text-slate-700">{t.name}</strong> ({t.email})
+                            </span>
+                            {t.phone && <span className="font-mono">{t.phone}</span>}
+                            <span>{new Date(t.createdAt).toLocaleString('en-IN')}</span>
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <a
+                            href={`mailto:${encodeURIComponent(t.email)}?subject=${encodeURIComponent(`Re: [Ticket #${t.id}] ${t.subject}`)}`}
+                            className="px-3 h-8 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-[#0B1F3A] font-semibold inline-flex items-center gap-1.5"
+                          >
+                            <Mail className="w-3.5 h-3.5 text-[#EA580C]" /> Reply via Mail
+                          </a>
+                          <select
+                            value={t.status}
+                            onChange={async (e) => {
+                              const nextStatus = e.target.value as 'Open' | 'In Progress' | 'Resolved';
+                              if (isStaticToken(adminToken)) {
+                                updateStaticAdminTicketStatus(t.id, nextStatus);
+                                await fetch(`/api/runtime/support/${encodeURIComponent(t.ticketId || String(t.id))}`, {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                                  body: JSON.stringify({ status: nextStatus }),
+                                }).catch(() => {});
+                                if (t.ticketId) {
+                                  await updateFirestoreSupportTicketStatus(t.ticketId, nextStatus).catch(() => {});
+                                }
+                              } else {
+                                await fetch(`/api/admin/support-tickets/${t.id}`, {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+                                  body: JSON.stringify({ status: nextStatus }),
+                                });
+                              }
+                              notify(`Ticket #${t.id} marked as ${nextStatus}`, 'success');
+                              loadAllAdminData(adminToken);
+                            }}
+                            className="h-8 px-2.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                          >
+                            <option value="Open">Open</option>
+                            <option value="In Progress">In Progress</option>
+                            <option value="Resolved">Resolved</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 border border-slate-200/80 rounded-lg p-3.5 text-slate-700 whitespace-pre-wrap leading-relaxed">
+                        {t.message}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
           </div>
         )}
       </main>

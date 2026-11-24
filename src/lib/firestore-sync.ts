@@ -271,3 +271,97 @@ export async function saveFirestoreStoreConfig(config: StoreConfig): Promise<voi
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
+
+export interface FirestoreSupportTicketItem {
+  id: number;
+  ticketId: string;
+  name: string;
+  email: string;
+  phone: string;
+  subject: string;
+  message: string;
+  status: string;
+  routedToEmail: string;
+  emailStatus: string;
+  createdAt: string;
+}
+
+export async function syncSupportTicketToFirestore(payload: {
+  ticketId: string;
+  name: string;
+  email: string;
+  phone?: string;
+  subject: string;
+  message: string;
+  routedToEmail: string;
+  emailStatus: 'sent' | 'pending_smtp' | 'failed';
+}): Promise<void> {
+  const cur = auth.currentUser;
+  if (!cur || !cur.emailVerified) return;
+
+  const safeTicketId = payload.ticketId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 128) || `TKT-${Date.now()}`;
+  const path = `supportTickets/${safeTicketId}`;
+
+  try {
+    await setDoc(doc(db, 'supportTickets', safeTicketId), {
+      ticketId: safeTicketId,
+      uid: cur.uid,
+      name: clampStr(payload.name, 160) || 'Customer',
+      email: clampStr(payload.email, 200).toLowerCase(),
+      phone: clampStr(payload.phone, 30),
+      subject: clampStr(payload.subject, 200),
+      message: clampStr(payload.message, 2000),
+      status: 'Open',
+      routedToEmail: clampStr(payload.routedToEmail, 200) || BOOTSTRAPPED_ADMIN_EMAIL,
+      emailStatus: payload.emailStatus,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function fetchFirestoreSupportTicketsAsAdmin(): Promise<FirestoreSupportTicketItem[]> {
+  if (!isFirebaseBootstrappedAdmin()) return [];
+  const path = 'supportTickets';
+  try {
+    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => {
+      const data = d.data();
+      const ticketId = String(data.ticketId || d.id);
+      return {
+        id: stableNumericId(ticketId),
+        ticketId,
+        name: String(data.name || ''),
+        email: String(data.email || ''),
+        phone: String(data.phone || ''),
+        subject: String(data.subject || ''),
+        message: String(data.message || ''),
+        status: String(data.status || 'Open'),
+        routedToEmail: String(data.routedToEmail || BOOTSTRAPPED_ADMIN_EMAIL),
+        emailStatus: String(data.emailStatus || 'pending_smtp'),
+        createdAt: toIsoString(data.createdAt) || new Date().toISOString(),
+      };
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function updateFirestoreSupportTicketStatus(
+  ticketId: string,
+  status: 'Open' | 'In Progress' | 'Resolved'
+): Promise<void> {
+  if (!isFirebaseBootstrappedAdmin() || !ticketId) return;
+  const path = `supportTickets/${ticketId}`;
+  try {
+    await updateDoc(doc(db, 'supportTickets', ticketId), {
+      status,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
