@@ -1,6 +1,12 @@
-import React, { useState } from 'react';
-import { signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  GoogleAuthProvider,
+  signInWithCredential,
+  signInWithPopup,
+  signOut as firebaseSignOut,
+} from 'firebase/auth';
 import { Lock, Mail, Phone, User, X } from 'lucide-react';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { syncGoogleCustomerToFirestore } from '../lib/firestore-sync';
 import { useStore } from '../context/StoreContext';
@@ -18,6 +24,28 @@ import {
 
 class AuthRequestError extends Error {}
 
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (cfg: {
+            client_id: string;
+            callback: (resp: { credential?: string }) => void;
+            use_fedcm_for_prompt?: boolean;
+            itp_support?: boolean;
+            auto_select?: boolean;
+          }) => void;
+          prompt: () => void;
+          cancel: () => void;
+        };
+      };
+    };
+  }
+}
+
+const LAST_GOOGLE_EMAIL_KEY = 'aagaman_last_google_email';
+
 export const AuthModal: React.FC = () => {
   const { isAuthModalOpen, setIsAuthModalOpen, setCustomerSession, notify } = useStore();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
@@ -32,13 +60,10 @@ export const AuthModal: React.FC = () => {
   const [googleError, setGoogleError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  if (!isAuthModalOpen) return null;
-
-  const LAST_GOOGLE_EMAIL_KEY = 'aagaman_last_google_email';
   const savedGoogleEmail =
     typeof window !== 'undefined' ? window.localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || '' : '';
 
-  const completeFirebaseCustomerSignIn = async (fbUser: NonNullable<typeof auth.currentUser>) => {
+  const completeFirebaseCustomerSignIn = useCallback(async (fbUser: NonNullable<typeof auth.currentUser>) => {
     const idToken = await fbUser.getIdToken();
     if (fbUser.email && typeof window !== 'undefined') {
       window.localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, fbUser.email);
@@ -94,7 +119,77 @@ export const AuthModal: React.FC = () => {
     await setCustomerSession(staticSession.token, staticSession.user);
     setIsAuthModalOpen(false);
     notify(`Welcome back, ${staticSession.user.name}!`, 'success');
-  };
+  }, [notify, setCustomerSession, setIsAuthModalOpen]);
+
+  const completeSignInRef = useRef(completeFirebaseCustomerSignIn);
+  completeSignInRef.current = completeFirebaseCustomerSignIn;
+
+  useEffect(() => {
+    if (!isAuthModalOpen || mode === 'forgot' || auth.currentUser) return;
+    const clientId = (firebaseConfig as { oAuthClientId?: string }).oAuthClientId;
+    if (!clientId) return;
+
+    let cancelled = false;
+    const initOneTap = () => {
+      if (cancelled || !window.google?.accounts?.id) return;
+      try {
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          use_fedcm_for_prompt: true,
+          itp_support: true,
+          auto_select: false,
+          callback: async (response: { credential?: string }) => {
+            if (!response?.credential || cancelled) return;
+            setLoading(true);
+            setError('');
+            setGoogleError('');
+            try {
+              const credential = GoogleAuthProvider.credential(response.credential);
+              const cred = await signInWithCredential(auth, credential);
+              await completeSignInRef.current(cred.user);
+            } catch (err: unknown) {
+              if (!cancelled) {
+                setGoogleError(err instanceof Error ? err.message : 'Google Sign-In failed.');
+              }
+            } finally {
+              if (!cancelled) setLoading(false);
+            }
+          },
+        });
+        window.google.accounts.id.prompt();
+      } catch {
+        // Ignore silent One-Tap errors (e.g., cross-origin iframe or non-allowlisted GIS origin)
+      }
+    };
+
+    if (window.google?.accounts?.id) {
+      initOneTap();
+    } else {
+      const existingScript = document.querySelector<HTMLScriptElement>('script[data-gsi-client="true"]');
+      if (existingScript) {
+        existingScript.addEventListener('load', initOneTap, { once: true });
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.dataset.gsiClient = 'true';
+        script.onload = initOneTap;
+        document.head.appendChild(script);
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      try {
+        window.google?.accounts?.id?.cancel();
+      } catch {
+        // ignore
+      }
+    };
+  }, [isAuthModalOpen, mode]);
+
+  if (!isAuthModalOpen) return null;
 
   const handleGoogleSignIn = async (forceAccountSelect = false) => {
     setError('');
@@ -127,6 +222,10 @@ export const AuthModal: React.FC = () => {
         setGoogleError('Google Sign-In popup was blocked by your browser. Allow popups or use the email form below.');
       } else if (msg.includes('popup-closed-by-user')) {
         setGoogleError('Google Sign-In was closed before completing. Try again or use the email form below.');
+      } else if (msg.toLowerCase().includes('missing initial state') || msg.toLowerCase().includes('sessionstorage')) {
+        setGoogleError(
+          'Browser storage blocked the Google popup (common in Incognito or in-app browsers). Open in normal Chrome or sign in with Email below.'
+        );
       } else {
         setGoogleError(msg);
       }
