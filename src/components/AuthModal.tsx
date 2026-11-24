@@ -34,64 +34,88 @@ export const AuthModal: React.FC = () => {
 
   if (!isAuthModalOpen) return null;
 
-  const handleGoogleSignIn = async () => {
+  const LAST_GOOGLE_EMAIL_KEY = 'aagaman_last_google_email';
+  const savedGoogleEmail =
+    typeof window !== 'undefined' ? window.localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) || '' : '';
+
+  const completeFirebaseCustomerSignIn = async (fbUser: NonNullable<typeof auth.currentUser>) => {
+    const idToken = await fbUser.getIdToken();
+    if (fbUser.email && typeof window !== 'undefined') {
+      window.localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, fbUser.email);
+    }
+    try {
+      const res = await fetch('/api/auth/firebase-sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (hasJsonContentType(res) && res.status < 500) {
+        const json = await res.json();
+        if (!res.ok) throw new AuthRequestError(json.error || 'Google sign-in failed.');
+        await setCustomerSession(idToken, json.user);
+        setIsAuthModalOpen(false);
+        notify(`Welcome back, ${json.user.name}!`, 'success');
+        return;
+      }
+    } catch (innerErr) {
+      if (innerErr instanceof AuthRequestError) throw innerErr;
+    }
+
+    const staticSession = staticSyncFirebaseCustomer({
+      uid: fbUser.uid,
+      email: fbUser.email || 'shopper@aagamanmart.in',
+      name: fbUser.displayName,
+      photoURL: fbUser.photoURL,
+      emailVerified: fbUser.emailVerified,
+    });
+
+    try {
+      const fsRes = await syncGoogleCustomerToFirestore({
+        uid: fbUser.uid,
+        name: staticSession.user.name,
+        email: staticSession.user.email,
+        phone: staticSession.user.phone,
+        photoUrl: staticSession.user.photoUrl,
+        emailVerified: fbUser.emailVerified,
+        phoneVerified: staticSession.user.phoneVerified,
+      });
+      if (fsRes.isBlocked) {
+        clearSavedStaticCustomerSession();
+        await firebaseSignOut(auth).catch(() => {});
+        throw new AuthRequestError('This account has been suspended. Please contact support.');
+      }
+    } catch (fsErr) {
+      if (fsErr instanceof AuthRequestError) throw fsErr;
+    }
+
+    await syncStaticCustomerToServer({
+      ...staticSession.user,
+      authMethod: 'google',
+    });
+    await setCustomerSession(staticSession.token, staticSession.user);
+    setIsAuthModalOpen(false);
+    notify(`Welcome back, ${staticSession.user.name}!`, 'success');
+  };
+
+  const handleGoogleSignIn = async (forceAccountSelect = false) => {
     setError('');
     setGoogleError('');
     setLoading(true);
     try {
+      if (!forceAccountSelect && auth.currentUser && auth.currentUser.emailVerified) {
+        await completeFirebaseCustomerSignIn(auth.currentUser);
+        return;
+      }
+
+      if (forceAccountSelect) {
+        googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
+      } else if (savedGoogleEmail) {
+        googleAuthProvider.setCustomParameters({ login_hint: savedGoogleEmail });
+      } else {
+        googleAuthProvider.setCustomParameters({});
+      }
+
       const cred = await signInWithPopup(auth, googleAuthProvider);
-      const idToken = await cred.user.getIdToken();
-      try {
-        const res = await fetch('/api/auth/firebase-sync', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${idToken}` },
-        });
-        if (hasJsonContentType(res) && res.status < 500) {
-          const json = await res.json();
-          if (!res.ok) throw new AuthRequestError(json.error || 'Google sign-in failed.');
-          await setCustomerSession(idToken, json.user);
-          setIsAuthModalOpen(false);
-          notify(`Welcome back, ${json.user.name}!`, 'success');
-          return;
-        }
-      } catch (innerErr) {
-        if (innerErr instanceof AuthRequestError) throw innerErr;
-      }
-
-      const staticSession = staticSyncFirebaseCustomer({
-        uid: cred.user.uid,
-        email: cred.user.email || 'shopper@aagamanmart.in',
-        name: cred.user.displayName,
-        photoURL: cred.user.photoURL,
-        emailVerified: cred.user.emailVerified,
-      });
-
-      try {
-        const fsRes = await syncGoogleCustomerToFirestore({
-          uid: cred.user.uid,
-          name: staticSession.user.name,
-          email: staticSession.user.email,
-          phone: staticSession.user.phone,
-          photoUrl: staticSession.user.photoUrl,
-          emailVerified: cred.user.emailVerified,
-          phoneVerified: staticSession.user.phoneVerified,
-        });
-        if (fsRes.isBlocked) {
-          clearSavedStaticCustomerSession();
-          await firebaseSignOut(auth).catch(() => {});
-          throw new AuthRequestError('This account has been suspended. Please contact support.');
-        }
-      } catch (fsErr) {
-        if (fsErr instanceof AuthRequestError) throw fsErr;
-      }
-
-      await syncStaticCustomerToServer({
-        ...staticSession.user,
-        authMethod: 'google',
-      });
-      await setCustomerSession(staticSession.token, staticSession.user);
-      setIsAuthModalOpen(false);
-      notify(`Welcome back, ${staticSession.user.name}!`, 'success');
+      await completeFirebaseCustomerSignIn(cred.user);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
       if (msg.includes('unauthorized-domain')) {
@@ -328,7 +352,7 @@ export const AuthModal: React.FC = () => {
               <button
                 type="button"
                 disabled={loading}
-                onClick={handleGoogleSignIn}
+                onClick={() => void handleGoogleSignIn(false)}
                 className="w-full h-11 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-800 font-semibold text-sm flex items-center justify-center gap-2.5 transition-colors"
               >
                 <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
@@ -349,8 +373,23 @@ export const AuthModal: React.FC = () => {
                     d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
                   />
                 </svg>
-                <span>Continue with Google</span>
+                <span>
+                  {savedGoogleEmail ? `Continue as ${savedGoogleEmail}` : 'Continue with Google'}
+                </span>
               </button>
+
+              {savedGoogleEmail && (
+                <div className="text-center">
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void handleGoogleSignIn(true)}
+                    className="text-[11px] font-medium text-slate-500 hover:text-[#0B1F3A] underline"
+                  >
+                    Use a different Google account
+                  </button>
+                </div>
+              )}
 
               {googleError && (
                 <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 space-y-1">
