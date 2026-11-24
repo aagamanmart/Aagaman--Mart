@@ -34,7 +34,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { signInWithPopup } from 'firebase/auth';
+import { onAuthStateChanged, signInWithPopup } from 'firebase/auth';
 import { InvoiceModal } from '../components/InvoiceModal';
 import { formatINR, useStore } from '../context/StoreContext';
 import { auth, googleAuthProvider } from '../lib/firebase';
@@ -660,6 +660,24 @@ export const AdminPage: React.FC = () => {
       loadAllAdminData(adminToken);
     }
   }, [tab, adminToken, loadAllAdminData]);
+
+  useEffect(() => {
+    if (!adminToken) return;
+    const unsub = onAuthStateChanged(auth, () => {
+      setFirebaseAdminConnected(isFirebaseBootstrappedAdmin());
+      loadAllAdminData(adminToken);
+    });
+    const onFocus = () => {
+      if (tab === 'customers' || tab === 'support' || tab === 'overview' || tab === 'orders') {
+        loadAllAdminData(adminToken);
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      unsub();
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [adminToken, tab, loadAllAdminData]);
 
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2246,6 +2264,13 @@ export const AdminPage: React.FC = () => {
                   </select>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => adminToken && loadAllAdminData(adminToken)}
+                    className="px-3 h-8 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-[#0B1F3A] font-semibold"
+                  >
+                    Refresh Customers
+                  </button>
                   {firebaseAdminConnected ? (
                     <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
                       Cloud Sync Active
@@ -2267,9 +2292,10 @@ export const AdminPage: React.FC = () => {
                           notify(err instanceof Error ? err.message : 'Google Admin connect failed.', 'error');
                         }
                       }}
+                      title="Optional: Connect Google Admin to also pull sign-ins from separate deployment domains"
                       className="px-3 h-8 rounded-lg bg-[#0B1F3A] hover:bg-slate-800 text-white font-semibold"
                     >
-                      Sync Cloud Customers (Google Admin)
+                      Optional: Cross-Domain Google Sync
                     </button>
                   )}
                   <p className="text-slate-500">

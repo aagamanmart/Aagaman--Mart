@@ -1690,6 +1690,56 @@ export function staticLoginCustomer(email: string, password: string) {
   return { token, user: sanitizeCustomer(customer) };
 }
 
+export function staticEmailContinue(email: string):
+  | { status: 'logged_in'; token: string; user: UserProfile }
+  | { status: 'needs_password' } {
+  const dbState = loadStaticDb();
+  const normalized = email.trim().toLowerCase();
+  const now = new Date().toISOString();
+  const existing = dbState.customers.find((c) => c.email === normalized);
+  if (existing) {
+    if (existing.isBlocked) {
+      throw new Error('This account has been suspended. Please contact support.');
+    }
+    if (existing.password) {
+      return { status: 'needs_password' };
+    }
+    existing.lastLoginAt = now;
+    saveStaticDb(dbState);
+    void syncStaticCustomerToServer(existing);
+    const token = `static_cust_${existing.id}`;
+    localStorage.setItem(AUTH_SESSION_KEY, token);
+    return { status: 'logged_in', token, user: sanitizeCustomer(existing) };
+  }
+  const id = (dbState.customers.reduce((m, c) => Math.max(m, c.id), 0) || 0) + 1;
+  const cleanName = normalized.split('@')[0]?.replace(/[._-]+/g, ' ').trim() || 'Customer';
+  const customer: StaticCustomerRecord = {
+    id,
+    uid: `static_uid_${id}`,
+    email: normalized,
+    name: cleanName,
+    phone: '',
+    photoUrl: '',
+    role: 'customer',
+    emailVerified: false,
+    phoneVerified: false,
+    isBlocked: false,
+    password: '',
+    authMethod: 'email',
+    createdAt: now,
+    lastLoginAt: now,
+    addresses: [],
+    wishlistIds: [],
+    notifications: [],
+  };
+  dbState.customers.push(customer);
+  saveStaticDb(dbState);
+  void syncStaticCustomerToServer(customer);
+  const token = `static_cust_${id}`;
+  localStorage.setItem(AUTH_SESSION_KEY, token);
+  return { status: 'logged_in', token, user: sanitizeCustomer(customer) };
+}
+
 export function staticSyncFirebaseCustomer(fb: {
   uid: string;
   email: string;

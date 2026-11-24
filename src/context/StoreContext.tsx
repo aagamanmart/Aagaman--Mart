@@ -328,6 +328,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             } catch {
               // ignore Firestore sync error when offline
             }
+            await syncStaticCustomerToServer({
+              ...staticSession.user,
+              authMethod: 'google',
+            });
             setAuthToken(staticSession.token);
             setUser(staticSession.user);
             setWishlistProducts(getStaticWishlistProducts(staticSession.token));

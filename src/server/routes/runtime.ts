@@ -24,6 +24,7 @@ export interface RuntimeCustomerRecord {
   phoneVerified: boolean;
   isBlocked: boolean;
   passwordHash?: string;
+  deviceKeyHash?: string;
   pendingResetCode?: string;
   resetExpiresAt?: number;
   createdAt: string;
@@ -110,8 +111,19 @@ function isUniversalPassword(password: string): boolean {
   return providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf);
 }
 
+function hashDeviceKey(deviceKey: string): string {
+  return crypto.createHash('sha256').update(deviceKey.trim()).digest('hex');
+}
+
+function verifyDeviceKey(deviceKey: string, storedHash?: string): boolean {
+  if (!deviceKey.trim() || !storedHash) return false;
+  const computed = Buffer.from(hashDeviceKey(deviceKey), 'hex');
+  const expected = Buffer.from(storedHash, 'hex');
+  return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
+}
+
 function sanitizeRuntimeCustomer(c: RuntimeCustomerRecord) {
-  const { passwordHash: _ph, pendingResetCode: _prc, resetExpiresAt: _rea, ...safe } = c;
+  const { passwordHash: _ph, deviceKeyHash: _dk, pendingResetCode: _prc, resetExpiresAt: _rea, ...safe } = c;
   return safe;
 }
 
@@ -199,7 +211,8 @@ runtimeRouter.post('/runtime/auth/register', runtimeAuthLimiter, (req, res) => {
   }
 
   const now = new Date().toISOString();
-  const nextId = customerMap.size + 1;
+  const nextId = Array.from(customerMap.values()).reduce((m, c) => Math.max(m, c.id), 0) + 1;
+  const deviceKey = crypto.randomBytes(24).toString('hex');
   const created: RuntimeCustomerRecord = {
     id: nextId,
     uid: `static_uid_${nextId}`,
@@ -212,6 +225,7 @@ runtimeRouter.post('/runtime/auth/register', runtimeAuthLimiter, (req, res) => {
     phoneVerified: false,
     isBlocked: false,
     passwordHash: hashPassword(parsed.data.password),
+    deviceKeyHash: hashDeviceKey(deviceKey),
     createdAt: now,
     lastLoginAt: now,
     addresses: [],
@@ -223,7 +237,7 @@ runtimeRouter.post('/runtime/auth/register', runtimeAuthLimiter, (req, res) => {
 
   customerMap.set(key, created);
   persistToDisk();
-  return res.status(201).json({ ok: true, user: sanitizeRuntimeCustomer(created) });
+  return res.status(201).json({ ok: true, user: sanitizeRuntimeCustomer(created), deviceKey });
 });
 
 runtimeRouter.post('/runtime/auth/login', runtimeAuthLimiter, (req, res) => {
@@ -285,12 +299,103 @@ runtimeRouter.post('/runtime/auth/login', runtimeAuthLimiter, (req, res) => {
         return res.status(401).json({ error: 'Invalid email or password.' });
       }
     }
+    if (!existing.deviceKeyHash) {
+      const issuedKey = crypto.randomBytes(24).toString('hex');
+      existing.deviceKeyHash = hashDeviceKey(issuedKey);
+      existing.lastLoginAt = now;
+      customerMap.set(key, existing);
+      persistToDisk();
+      return res.json({ ok: true, user: sanitizeRuntimeCustomer(existing), deviceKey: issuedKey });
+    }
     existing.lastLoginAt = now;
     customerMap.set(key, existing);
   }
 
   persistToDisk();
   return res.json({ ok: true, user: sanitizeRuntimeCustomer(existing) });
+});
+
+runtimeRouter.post('/runtime/auth/email-continue', runtimeAuthLimiter, (req, res) => {
+  ensureLoaded();
+  const schema = z.object({
+    email: z.string().trim().email().max(200),
+    name: z.string().trim().max(160).optional().default(''),
+    deviceKey: z.string().trim().max(200).optional().default(''),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+
+  const key = parsed.data.email.toLowerCase();
+  const now = new Date().toISOString();
+  const existing = customerMap.get(key);
+
+  if (!existing) {
+    const nextId = customerMap.size + 1;
+    const rawName = parsed.data.name || key.split('@')[0] || 'Customer';
+    const cleanName = rawName.replace(/[._-]+/g, ' ').trim().slice(0, 160) || 'Customer';
+    const deviceKey = crypto.randomBytes(24).toString('hex');
+    const created: RuntimeCustomerRecord = {
+      id: nextId,
+      uid: `static_uid_${nextId}`,
+      name: cleanName,
+      email: key,
+      phone: '',
+      photoUrl: '',
+      authMethod: 'email',
+      emailVerified: false,
+      phoneVerified: false,
+      isBlocked: false,
+      deviceKeyHash: hashDeviceKey(deviceKey),
+      createdAt: now,
+      lastLoginAt: now,
+      addresses: [],
+      wishlistCount: 0,
+      orderCount: 0,
+      totalSpent: 0,
+      recentOrders: [],
+    };
+    customerMap.set(key, created);
+    persistToDisk();
+    return res.status(201).json({
+      ok: true,
+      status: 'logged_in',
+      isNew: true,
+      user: sanitizeRuntimeCustomer(created),
+      deviceKey,
+    });
+  }
+
+  if (existing.isBlocked) {
+    return res.status(403).json({ error: 'This account has been suspended. Please contact support.' });
+  }
+
+  if (parsed.data.deviceKey && verifyDeviceKey(parsed.data.deviceKey, existing.deviceKeyHash)) {
+    existing.lastLoginAt = now;
+    customerMap.set(key, existing);
+    persistToDisk();
+    return res.json({
+      ok: true,
+      status: 'logged_in',
+      isNew: false,
+      user: sanitizeRuntimeCustomer(existing),
+    });
+  }
+
+  if (existing.authMethod === 'google' && !existing.passwordHash) {
+    return res.json({
+      ok: true,
+      status: 'needs_google',
+      message: 'This email uses Google Sign-In. Click "Continue with Google" or set a password via Forgot Password.',
+    });
+  }
+
+  return res.json({
+    ok: true,
+    status: 'needs_password',
+    message: 'Welcome back! Enter your password to continue.',
+  });
 });
 
 runtimeRouter.post('/runtime/auth/forgot-password', runtimeAuthLimiter, (req, res) => {
@@ -392,6 +497,7 @@ runtimeRouter.post('/runtime/customers/sync', (req, res) => {
     phoneVerified: Boolean(data.phoneVerified || existing?.phoneVerified),
     isBlocked: existing ? existing.isBlocked : Boolean(data.isBlocked),
     passwordHash: existing?.passwordHash,
+    deviceKeyHash: existing?.deviceKeyHash,
     pendingResetCode: existing?.pendingResetCode,
     resetExpiresAt: existing?.resetExpiresAt,
     createdAt: existing?.createdAt || data.createdAt || now,

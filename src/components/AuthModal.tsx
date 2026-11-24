@@ -1,18 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  GoogleAuthProvider,
-  signInWithCredential,
   signInWithPopup,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
-import { Lock, Mail, Phone, User, X } from 'lucide-react';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { ArrowRight, Lock, Mail, Phone, User, X } from 'lucide-react';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { syncGoogleCustomerToFirestore } from '../lib/firestore-sync';
 import { useStore } from '../context/StoreContext';
 import {
   clearSavedStaticCustomerSession,
   hasJsonContentType,
+  staticEmailContinue,
   staticForgotPassword,
   staticLoginCustomer,
   staticRegisterCustomer,
@@ -24,31 +22,36 @@ import {
 
 class AuthRequestError extends Error {}
 
-declare global {
-  interface Window {
-    google?: {
-      accounts?: {
-        id?: {
-          initialize: (cfg: {
-            client_id: string;
-            callback: (resp: { credential?: string }) => void;
-            use_fedcm_for_prompt?: boolean;
-            itp_support?: boolean;
-            auto_select?: boolean;
-          }) => void;
-          prompt: () => void;
-          cancel: () => void;
-        };
-      };
-    };
+const LAST_GOOGLE_EMAIL_KEY = 'aagaman_last_google_email';
+const DEVICE_KEYS_STORAGE = 'aagaman_email_device_keys_v1';
+
+function getStoredDeviceKey(email: string): string {
+  try {
+    const raw = window.localStorage.getItem(DEVICE_KEYS_STORAGE);
+    if (!raw) return '';
+    const map = JSON.parse(raw) as Record<string, string>;
+    return map[email.trim().toLowerCase()] || '';
+  } catch {
+    return '';
   }
 }
 
-const LAST_GOOGLE_EMAIL_KEY = 'aagaman_last_google_email';
+function saveStoredDeviceKey(email: string, deviceKey?: string) {
+  if (!deviceKey) return;
+  try {
+    const raw = window.localStorage.getItem(DEVICE_KEYS_STORAGE);
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    map[email.trim().toLowerCase()] = deviceKey;
+    window.localStorage.setItem(DEVICE_KEYS_STORAGE, JSON.stringify(map));
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 export const AuthModal: React.FC = () => {
   const { isAuthModalOpen, setIsAuthModalOpen, setCustomerSession, notify } = useStore();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [passwordStep, setPasswordStep] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -121,74 +124,6 @@ export const AuthModal: React.FC = () => {
     notify(`Welcome back, ${staticSession.user.name}!`, 'success');
   }, [notify, setCustomerSession, setIsAuthModalOpen]);
 
-  const completeSignInRef = useRef(completeFirebaseCustomerSignIn);
-  completeSignInRef.current = completeFirebaseCustomerSignIn;
-
-  useEffect(() => {
-    if (!isAuthModalOpen || mode === 'forgot' || auth.currentUser) return;
-    const clientId = (firebaseConfig as { oAuthClientId?: string }).oAuthClientId;
-    if (!clientId) return;
-
-    let cancelled = false;
-    const initOneTap = () => {
-      if (cancelled || !window.google?.accounts?.id) return;
-      try {
-        window.google.accounts.id.initialize({
-          client_id: clientId,
-          use_fedcm_for_prompt: true,
-          itp_support: true,
-          auto_select: false,
-          callback: async (response: { credential?: string }) => {
-            if (!response?.credential || cancelled) return;
-            setLoading(true);
-            setError('');
-            setGoogleError('');
-            try {
-              const credential = GoogleAuthProvider.credential(response.credential);
-              const cred = await signInWithCredential(auth, credential);
-              await completeSignInRef.current(cred.user);
-            } catch (err: unknown) {
-              if (!cancelled) {
-                setGoogleError(err instanceof Error ? err.message : 'Google Sign-In failed.');
-              }
-            } finally {
-              if (!cancelled) setLoading(false);
-            }
-          },
-        });
-        window.google.accounts.id.prompt();
-      } catch {
-        // Ignore silent One-Tap errors (e.g., cross-origin iframe or non-allowlisted GIS origin)
-      }
-    };
-
-    if (window.google?.accounts?.id) {
-      initOneTap();
-    } else {
-      const existingScript = document.querySelector<HTMLScriptElement>('script[data-gsi-client="true"]');
-      if (existingScript) {
-        existingScript.addEventListener('load', initOneTap, { once: true });
-      } else {
-        const script = document.createElement('script');
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        script.defer = true;
-        script.dataset.gsiClient = 'true';
-        script.onload = initOneTap;
-        document.head.appendChild(script);
-      }
-    }
-
-    return () => {
-      cancelled = true;
-      try {
-        window.google?.accounts?.id?.cancel();
-      } catch {
-        // ignore
-      }
-    };
-  }, [isAuthModalOpen, mode]);
-
   if (!isAuthModalOpen) return null;
 
   const handleGoogleSignIn = async (forceAccountSelect = false) => {
@@ -214,20 +149,23 @@ export const AuthModal: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
       if (msg.includes('unauthorized-domain')) {
-        const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
         setGoogleError(
-          `Google Sign-In requires "${host}" to be added in Firebase Console → Authentication → Settings → Authorized domains. Use the email form below in the meantime.`
+          'Google popup is not enabled on this preview domain. Use instant Email Continue above — no password or mobile key required.'
         );
       } else if (msg.includes('popup-blocked')) {
-        setGoogleError('Google Sign-In popup was blocked by your browser. Allow popups or use the email form below.');
+        setGoogleError(
+          'Browser blocked the Google popup. Allow popups or simply enter your email above for instant sign-in.'
+        );
       } else if (msg.includes('popup-closed-by-user')) {
-        setGoogleError('Google Sign-In was closed before completing. Try again or use the email form below.');
+        setGoogleError(
+          'Google Sign-In was cancelled. You can also enter your email above and click Continue for instant sign-in.'
+        );
       } else if (msg.toLowerCase().includes('missing initial state') || msg.toLowerCase().includes('sessionstorage')) {
         setGoogleError(
-          'Browser storage blocked the Google popup (common in Incognito or in-app browsers). Open in normal Chrome or sign in with Email below.'
+          'Mobile browser storage blocked the Google popup. Enter your email above and click Continue for instant login.'
         );
       } else {
-        setGoogleError(msg);
+        setGoogleError(`${msg} — Use Email Continue above for instant access.`);
       }
     } finally {
       setLoading(false);
@@ -241,11 +179,64 @@ export const AuthModal: React.FC = () => {
     setLoading(true);
     try {
       if (mode === 'login') {
+        const cleanEmail = email.trim().toLowerCase();
+        if (!passwordStep) {
+          // Step 1: Instant Email Continue (no password or mobile key required on new/trusted device)
+          try {
+            const rtContRes = await fetch('/api/runtime/auth/email-continue', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email: cleanEmail,
+                deviceKey: getStoredDeviceKey(cleanEmail),
+              }),
+            });
+            if (hasJsonContentType(rtContRes) && rtContRes.status < 500) {
+              const rtJson = await rtContRes.json();
+              if (!rtContRes.ok) throw new AuthRequestError(rtJson.error || 'Could not sign in.');
+              if (rtJson.status === 'logged_in' && rtJson.user) {
+                saveStoredDeviceKey(cleanEmail, rtJson.deviceKey);
+                const session = upsertStaticCustomerSession(rtJson.user);
+                await setCustomerSession(session.token, session.user);
+                setIsAuthModalOpen(false);
+                notify(
+                  rtJson.isNew
+                    ? `Signed in! Welcome to AAGAMAN MART, ${session.user.name}.`
+                    : `Welcome back, ${session.user.name}!`,
+                  'success'
+                );
+                return;
+              }
+              if (rtJson.status === 'needs_google') {
+                setGoogleError(rtJson.message || 'Please click "Continue with Google" below.');
+                return;
+              }
+              setPasswordStep(true);
+              return;
+            }
+          } catch (err) {
+            if (err instanceof AuthRequestError) throw err;
+          }
+
+          // Pure offline fallback
+          const offlineRes = staticEmailContinue(cleanEmail);
+          if (offlineRes.status === 'logged_in') {
+            await syncStaticCustomerToServer({ ...offlineRes.user, authMethod: 'email' });
+            await setCustomerSession(offlineRes.token, offlineRes.user);
+            setIsAuthModalOpen(false);
+            notify(`Welcome, ${offlineRes.user.name}!`, 'success');
+            return;
+          }
+          setPasswordStep(true);
+          return;
+        }
+
+        // Step 2: Returning user on a new device entering password
         try {
           const res = await fetch('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ email: cleanEmail, password }),
           });
           if (hasJsonContentType(res) && res.status < 500) {
             const json = await res.json();
@@ -263,11 +254,12 @@ export const AuthModal: React.FC = () => {
           const rtRes = await fetch('/api/runtime/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ email: cleanEmail, password }),
           });
           if (hasJsonContentType(rtRes) && rtRes.status < 500) {
             const rtJson = await rtRes.json();
             if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Invalid email or password.');
+            saveStoredDeviceKey(cleanEmail, rtJson.deviceKey);
             const session = upsertStaticCustomerSession(rtJson.user, password);
             await setCustomerSession(session.token, session.user);
             setIsAuthModalOpen(false);
@@ -278,17 +270,17 @@ export const AuthModal: React.FC = () => {
           if (err instanceof AuthRequestError) throw err;
         }
 
-        const session = staticLoginCustomer(email, password);
+        const session = staticLoginCustomer(cleanEmail, password);
         await syncStaticCustomerToServer({ ...session.user, authMethod: 'email' });
         await setCustomerSession(session.token, session.user);
         setIsAuthModalOpen(false);
         notify(`Welcome back, ${session.user.name}!`, 'success');
       } else if (mode === 'register') {
         const phoneDigits = phone.replace(/\D/g, '');
-        if (phoneDigits.length !== 10) {
-          throw new Error('Please enter a valid 10-digit Indian mobile number.');
+        if (phoneDigits.length > 0 && phoneDigits.length !== 10) {
+          throw new Error('Enter a 10-digit Indian mobile number or leave it blank.');
         }
-        const formattedPhone = `+91 ${phoneDigits}`;
+        const formattedPhone = phoneDigits.length === 10 ? `+91 ${phoneDigits}` : '';
         try {
           const res = await fetch('/api/auth/register', {
             method: 'POST',
@@ -316,6 +308,7 @@ export const AuthModal: React.FC = () => {
           if (hasJsonContentType(rtRes) && rtRes.status < 500) {
             const rtJson = await rtRes.json();
             if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Registration failed.');
+            saveStoredDeviceKey(email, rtJson.deviceKey);
             const session = upsertStaticCustomerSession(rtJson.user, password);
             await setCustomerSession(session.token, session.user);
             setIsAuthModalOpen(false);
@@ -382,6 +375,7 @@ export const AuthModal: React.FC = () => {
               const json = await res.json();
               if (!res.ok) throw new AuthRequestError(json.error || 'Reset failed.');
               setMode('login');
+              setPasswordStep(true);
               setResetStep('request');
               setSandboxResetHint('');
               notify('Password updated! Please sign in.', 'success');
@@ -400,6 +394,7 @@ export const AuthModal: React.FC = () => {
               const rtJson = await rtRes.json();
               if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Reset failed.');
               setMode('login');
+              setPasswordStep(true);
               setResetStep('request');
               setSandboxResetHint('');
               notify('Password updated! Please sign in.', 'success');
@@ -410,6 +405,7 @@ export const AuthModal: React.FC = () => {
           }
           staticResetPassword(email, resetCode, password);
           setMode('login');
+          setPasswordStep(true);
           setResetStep('request');
           setSandboxResetHint('');
           notify('Password updated! Please sign in.', 'success');
@@ -434,7 +430,11 @@ export const AuthModal: React.FC = () => {
                 ? 'Create Your Account'
                 : 'Reset Password'}
             </h2>
-            <p className="text-xs text-slate-300 mt-0.5">Quality That Moves You Forward.</p>
+            <p className="text-xs text-slate-300 mt-0.5">
+              {mode === 'login' && !passwordStep
+                ? 'Enter your email to continue instantly — no mobile key needed.'
+                : 'Quality That Moves You Forward.'}
+            </p>
           </div>
           <button
             type="button"
@@ -446,8 +446,131 @@ export const AuthModal: React.FC = () => {
         </div>
 
         <div className="p-6 space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-3.5">
+            {mode === 'register' && (
+              <>
+                <div className="relative">
+                  <User className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                  <input
+                    type="text"
+                    required
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Full Name"
+                    className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+                  />
+                </div>
+                <div className="flex items-center h-10 rounded-lg border border-slate-300 focus-within:ring-2 focus-within:ring-[#EA580C] bg-white overflow-hidden">
+                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full bg-slate-50 border-r border-slate-200 shrink-0 select-none">
+                    <Phone className="w-4 h-4 text-slate-400" />
+                    <span className="text-sm font-semibold text-[#0B1F3A] font-mono">+91</span>
+                  </div>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    maxLength={10}
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    placeholder="Mobile number (Optional)"
+                    className="flex-1 h-full px-3 text-sm font-mono focus:outline-none"
+                  />
+                  <span className="pr-3 text-[11px] font-mono text-slate-400 shrink-0 tabular-nums">
+                    {phone.length}/10
+                  </span>
+                </div>
+              </>
+            )}
+
+            <div className="relative">
+              <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (mode === 'login' && passwordStep) {
+                    setPasswordStep(false);
+                    setPassword('');
+                  }
+                }}
+                placeholder="Enter your email address"
+                className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+              />
+            </div>
+
+            {mode === 'forgot' && resetStep === 'confirm' && (
+              <div className="space-y-2">
+                {sandboxResetHint && (
+                  <p className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">
+                    Reset Code: <strong className="font-mono">{sandboxResetHint}</strong>
+                  </p>
+                )}
+                <input
+                  type="text"
+                  required
+                  value={resetCode}
+                  onChange={(e) => setResetCode(e.target.value)}
+                  placeholder="Enter 6-digit reset code"
+                  className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+                />
+              </div>
+            )}
+
+            {((mode === 'login' && passwordStep) || mode === 'register' || (mode === 'forgot' && resetStep === 'confirm')) && (
+              <div className="space-y-1.5">
+                {mode === 'login' && passwordStep && (
+                  <p className="text-[11px] text-slate-500">
+                    Enter your password for <strong>{email}</strong> to sign in on this device.
+                  </p>
+                )}
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                  <input
+                    type="password"
+                    required
+                    minLength={mode === 'login' ? 1 : 6}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={mode === 'forgot' ? 'New Password (min 6 chars)' : 'Password'}
+                    className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+                  />
+                </div>
+              </div>
+            )}
+
+            {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
+            >
+              <span>
+                {loading
+                  ? 'Please wait...'
+                  : mode === 'login'
+                  ? passwordStep
+                    ? 'Sign In'
+                    : 'Continue with Email'
+                  : mode === 'register'
+                  ? 'Create Account'
+                  : resetStep === 'request'
+                  ? 'Send Reset Code'
+                  : 'Update Password'}
+              </span>
+              {!loading && mode === 'login' && !passwordStep && <ArrowRight className="w-4 h-4" />}
+            </button>
+          </form>
+
           {mode !== 'forgot' && (
             <>
+              <div className="flex items-center gap-3 text-xs text-slate-400">
+                <div className="flex-1 h-px bg-slate-200" />
+                <span>or</span>
+                <div className="flex-1 h-px bg-slate-200" />
+              </div>
+
               <button
                 type="button"
                 disabled={loading}
@@ -473,7 +596,7 @@ export const AuthModal: React.FC = () => {
                   />
                 </svg>
                 <span>
-                  {savedGoogleEmail ? `Continue as ${savedGoogleEmail}` : 'Continue with Google'}
+                  {savedGoogleEmail ? `Continue with Google (${savedGoogleEmail})` : 'Continue with Google'}
                 </span>
               </button>
 
@@ -491,131 +614,12 @@ export const AuthModal: React.FC = () => {
               )}
 
               {googleError && (
-                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 space-y-1">
+                <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800 space-y-1">
                   <p className="font-medium">{googleError}</p>
-                  {mode === 'login' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMode('register');
-                        setError('');
-                      }}
-                      className="font-semibold text-[#EA580C] hover:underline"
-                    >
-                      Register with Email &amp; +91 Mobile below →
-                    </button>
-                  )}
                 </div>
               )}
-
-              <div className="flex items-center gap-3 text-xs text-slate-400">
-                <div className="flex-1 h-px bg-slate-200" />
-                <span>or with email</span>
-                <div className="flex-1 h-px bg-slate-200" />
-              </div>
             </>
           )}
-
-          <form onSubmit={handleSubmit} className="space-y-3.5">
-            {mode === 'register' && (
-              <>
-                <div className="relative">
-                  <User className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                  <input
-                    type="text"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Full Name"
-                    className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-                  />
-                </div>
-                <div className="flex items-center h-10 rounded-lg border border-slate-300 focus-within:ring-2 focus-within:ring-[#EA580C] bg-white overflow-hidden">
-                  <div className="flex items-center gap-1.5 pl-3 pr-2.5 h-full bg-slate-50 border-r border-slate-200 shrink-0 select-none">
-                    <Phone className="w-4 h-4 text-slate-400" />
-                    <span className="text-sm font-semibold text-[#0B1F3A] font-mono">+91</span>
-                  </div>
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    required
-                    maxLength={10}
-                    pattern="[0-9]{10}"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                    placeholder="10-digit mobile number"
-                    className="flex-1 h-full px-3 text-sm font-mono focus:outline-none"
-                  />
-                  <span className="pr-3 text-[11px] font-mono text-slate-400 shrink-0 tabular-nums">
-                    {phone.length}/10
-                  </span>
-                </div>
-              </>
-            )}
-
-            <div className="relative">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email address"
-                className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-              />
-            </div>
-
-            {mode === 'forgot' && resetStep === 'confirm' && (
-              <div className="space-y-2">
-                {sandboxResetHint && (
-                  <p className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">
-                    Sandbox Reset Code: <strong className="font-mono">{sandboxResetHint}</strong>
-                  </p>
-                )}
-                <input
-                  type="text"
-                  required
-                  value={resetCode}
-                  onChange={(e) => setResetCode(e.target.value)}
-                  placeholder="Enter 6-digit reset code"
-                  className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-                />
-              </div>
-            )}
-
-            {(mode !== 'forgot' || resetStep === 'confirm') && (
-              <div className="relative">
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={mode === 'forgot' ? 'New Password (min 6 chars)' : 'Password'}
-                  className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-                />
-              </div>
-            )}
-
-            {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm transition-colors disabled:opacity-60"
-            >
-              {loading
-                ? 'Please wait...'
-                : mode === 'login'
-                ? 'Sign In'
-                : mode === 'register'
-                ? 'Create Account'
-                : resetStep === 'request'
-                ? 'Send Reset Code'
-                : 'Update Password'}
-            </button>
-          </form>
 
           <div className="flex items-center justify-between text-xs text-slate-600 pt-2 border-t border-slate-100">
             {mode === 'login' ? (
@@ -629,18 +633,19 @@ export const AuthModal: React.FC = () => {
                   }}
                   className="hover:text-[#EA580C] font-medium"
                 >
-                  Forgot password?
+                  Forgot / Set password?
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     setMode('register');
+                    setPasswordStep(false);
                     setError('');
                     setGoogleError('');
                   }}
                   className="text-[#0B1F3A] font-semibold hover:text-[#EA580C]"
                 >
-                  New customer? Register
+                  Register with Password
                 </button>
               </>
             ) : (
@@ -648,12 +653,13 @@ export const AuthModal: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setMode('login');
+                  setPasswordStep(false);
                   setError('');
                   setGoogleError('');
                 }}
                 className="text-[#0B1F3A] font-semibold hover:text-[#EA580C]"
               >
-                Already have an account? Sign In
+                Back to Quick Email Sign In
               </button>
             )}
           </div>
