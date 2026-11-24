@@ -53,15 +53,24 @@ function escapeHtml(val: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function getResolvedSmtpConfig() {
+  const user = process.env.SMTP_USER?.trim() || '';
+  const rawPass = process.env.SMTP_PASS?.trim() || '';
+  const explicitHost = process.env.SMTP_HOST?.trim() || '';
+  const isGmailUser = /@(gmail|googlemail)\.com$/i.test(user);
+  const host = explicitHost || (isGmailUser ? 'smtp.gmail.com' : '');
+  const port = Number(process.env.SMTP_PORT) || (host === 'smtp.gmail.com' ? 465 : 587);
+  // Google displays 16-char App Passwords in groups of 4 separated by spaces; strip spaces for Gmail SMTP.
+  const pass = host === 'smtp.gmail.com' ? rawPass.replace(/\s+/g, '') : rawPass;
+  return { host, port, user, pass };
+}
+
 export function getMailConfigStatus(): MailConfigStatus {
   if (process.env.RESEND_API_KEY?.trim()) {
     return { configured: true, provider: 'resend' };
   }
-  if (
-    process.env.SMTP_HOST?.trim() &&
-    process.env.SMTP_USER?.trim() &&
-    process.env.SMTP_PASS?.trim()
-  ) {
+  const smtp = getResolvedSmtpConfig();
+  if (smtp.host && smtp.user && smtp.pass) {
     return { configured: true, provider: 'smtp' };
   }
   return { configured: false, provider: 'none' };
@@ -194,19 +203,19 @@ export async function dispatchSupportTicketEmail(
   }
 
   try {
-    const port = Number(process.env.SMTP_PORT) || 587;
+    const smtp = getResolvedSmtpConfig();
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST!.trim(),
-      port,
-      secure: port === 465,
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.port === 465,
       auth: {
-        user: process.env.SMTP_USER!.trim(),
-        pass: process.env.SMTP_PASS!.trim(),
+        user: smtp.user,
+        pass: smtp.pass,
       },
     });
     const fromAddr =
       process.env.SMTP_FROM?.trim() ||
-      `AAGAMAN MART Support <${process.env.SMTP_USER!.trim()}>`;
+      `AAGAMAN MART Support <${smtp.user}>`;
     await transporter.sendMail({
       from: fromAddr,
       to: cleanTarget,

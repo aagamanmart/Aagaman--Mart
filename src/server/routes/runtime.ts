@@ -648,3 +648,43 @@ runtimeRouter.patch('/runtime/support/:id', requireRuntimeAdmin, (req, res) => {
   persistToDisk();
   return res.json({ ok: true, ticket: updated });
 });
+
+runtimeRouter.post('/runtime/support/test-email', requireRuntimeAdmin, runtimeAuthLimiter, async (_req, res) => {
+  ensureLoaded();
+  const targetSupportEmail = await resolveLiveSupportEmail({
+    runtimeSupportEmail: runtimeConfig?.supportEmail,
+  });
+  const mailStatus = getMailConfigStatus();
+  if (!mailStatus.configured) {
+    return res.status(400).json({
+      ok: false,
+      routedToEmail: targetSupportEmail,
+      error: 'Mail sender is not configured yet. Add SMTP_USER & SMTP_PASS (or RESEND_API_KEY) in Secrets first.',
+    });
+  }
+  const result = await dispatchSupportTicketEmail(
+    {
+      ticketId: 'TEST',
+      name: 'AAGAMAN MART Admin Test',
+      email: targetSupportEmail,
+      phone: '',
+      subject: 'Test Support Email Connection',
+      message: 'This is a test confirmation confirming customer support queries route directly to your active receiver email.',
+      createdAt: new Date().toISOString(),
+    },
+    targetSupportEmail
+  );
+  if (result.emailStatus !== 'sent') {
+    return res.status(502).json({
+      ok: false,
+      routedToEmail: targetSupportEmail,
+      error: 'Email send failed. Please verify your Gmail App Password (16 letters) or Resend API key.',
+    });
+  }
+  return res.json({
+    ok: true,
+    routedToEmail: targetSupportEmail,
+    provider: result.provider,
+    message: `Test email sent successfully to ${targetSupportEmail}!`,
+  });
+});

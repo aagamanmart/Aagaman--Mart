@@ -329,6 +329,8 @@ export const AdminPage: React.FC = () => {
     mailConfigured: boolean;
     provider: string;
   }>({ activeSupportEmail: 'utkarshjaiswar137@gmail.com', mailConfigured: false, provider: 'none' });
+  const [sendingTestMail, setSendingTestMail] = useState(false);
+  const [testMailFeedback, setTestMailFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [settingsForm, setSettingsForm] = useState<StoreConfig>(() => getStaticAdminSettings());
   const [invoiceOrder, setInvoiceOrder] = useState<OrderRecord | null>(null);
 
@@ -3335,54 +3337,116 @@ export const AdminPage: React.FC = () => {
         {tab === 'support' && (
           <div className="space-y-5 text-xs">
             {/* Live Routing & Email Status Card */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-[#EA580C]" /> Customer Support Channel &amp; Mail Routing
-                  </h2>
-                  {supportMailInfo.mailConfigured ? (
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-semibold">
-                      Auto-Email Active ({supportMailInfo.provider.toUpperCase()})
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold">
-                      Live Admin Channel Active · Add SMTP/Resend Secret for Auto-Inbox Email
-                    </span>
-                  )}
-                </div>
-                <p className="text-slate-600">
-                  Every customer support query submitted on <code className="font-mono bg-slate-100 px-1 rounded">/support</code> appears here immediately and routes to your active support email:{' '}
-                  <strong className="text-[#0B1F3A] font-mono">
-                    {settingsForm.supportEmail || supportMailInfo.activeSupportEmail}
-                  </strong>
-                </p>
-                {!supportMailInfo.mailConfigured && (
-                  <p className="text-[11px] text-slate-500">
-                    To forward every query straight into your Gmail/Mail inbox automatically, configure{' '}
-                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_HOST</code> (e.g. <code className="font-mono">smtp.gmail.com</code>),{' '}
-                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_PORT</code> (<code className="font-mono">465</code>),{' '}
-                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_USER</code>, and{' '}
-                    <code className="font-mono bg-slate-100 px-1 rounded">SMTP_PASS</code> (or <code className="font-mono bg-slate-100 px-1 rounded">RESEND_API_KEY</code>) in environment secrets.
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-[#EA580C]" /> Customer Support Channel &amp; Mail Routing
+                    </h2>
+                    {supportMailInfo.mailConfigured ? (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-semibold">
+                        Auto-Email Active ({supportMailInfo.provider.toUpperCase()})
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold">
+                        Live Admin Channel Active · Gmail Auto-Forward Not Connected Yet
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-slate-600">
+                    Every customer support query submitted on <code className="font-mono bg-slate-100 px-1 rounded">/support</code> appears here immediately and routes to your active support email:{' '}
+                    <strong className="text-[#0B1F3A] font-mono">
+                      {settingsForm.supportEmail || supportMailInfo.activeSupportEmail}
+                    </strong>
                   </p>
-                )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setTab('settings')}
+                    className="px-3.5 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 font-semibold text-[#0B1F3A]"
+                  >
+                    Change Receiver Email
+                  </button>
+                  <button
+                    type="button"
+                    disabled={sendingTestMail}
+                    onClick={async () => {
+                      if (!adminToken) return;
+                      setSendingTestMail(true);
+                      setTestMailFeedback(null);
+                      try {
+                        const res = await fetch('/api/runtime/support/test-email', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${adminToken}` },
+                        });
+                        const data = await res.json();
+                        setTestMailFeedback({
+                          ok: Boolean(res.ok && data.ok),
+                          text: data.message || data.error || 'Could not send test email.',
+                        });
+                      } catch {
+                        setTestMailFeedback({ ok: false, text: 'Network error while testing email delivery.' });
+                      } finally {
+                        setSendingTestMail(false);
+                      }
+                    }}
+                    className="px-3.5 h-9 rounded-lg border border-[#EA580C] text-[#EA580C] hover:bg-orange-50 font-semibold disabled:opacity-50"
+                  >
+                    {sendingTestMail ? 'Sending Test...' : 'Send Test Email'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adminToken && loadAllAdminData(adminToken)}
+                    className="px-4 h-9 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold"
+                  >
+                    Refresh Inbox
+                  </button>
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setTab('settings')}
-                  className="px-3.5 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 font-semibold text-[#0B1F3A]"
+
+              {testMailFeedback && (
+                <div
+                  className={`px-3.5 py-2.5 rounded-lg border text-xs font-medium ${
+                    testMailFeedback.ok
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : 'bg-red-50 border-red-200 text-red-700'
+                  }`}
                 >
-                  Change Receiver Email
-                </button>
-                <button
-                  type="button"
-                  onClick={() => adminToken && loadAllAdminData(adminToken)}
-                  className="px-4 h-9 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold"
-                >
-                  Refresh Inbox
-                </button>
-              </div>
+                  {testMailFeedback.text}
+                </div>
+              )}
+
+              {!supportMailInfo.mailConfigured && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 space-y-2 text-[11px] text-slate-600">
+                  <p className="font-bold text-[#0B1F3A]">
+                    Easy 2-Step Gmail Auto-Email Setup (Optional — tickets already work live below):
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1">
+                    <li>
+                      Open{' '}
+                      <a
+                        href="https://myaccount.google.com/apppasswords"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#EA580C] font-semibold underline"
+                      >
+                        Google App Passwords
+                      </a>{' '}
+                      (enable 2-Step Verification if asked) and create a password named <strong>Aagaman Mart</strong>.
+                    </li>
+                    <li>
+                      In your app <strong>Secrets / Environment Variables</strong>, add just 2 keys:{' '}
+                      <code className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded text-[#0B1F3A]">SMTP_USER</code> = your Gmail address, and{' '}
+                      <code className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded text-[#0B1F3A]">SMTP_PASS</code> = the 16-letter App Password (Gmail server settings are automatic).
+                    </li>
+                    <li>
+                      Restart/redeploy once and click <strong>Send Test Email</strong> above to confirm inbox delivery.
+                    </li>
+                  </ol>
+                </div>
+              )}
             </div>
 
             {/* Filter & Search Bar */}
