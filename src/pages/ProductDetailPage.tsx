@@ -35,9 +35,11 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
     toggleWishlist,
     toggleCompare,
     recordProductView,
+    user,
     authToken,
     setIsAuthModalOpen,
     notify,
+    backendUnavailable,
   } = useStore();
 
   const [product, setProduct] = useState<Product | null>(null);
@@ -98,7 +100,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
       setActiveImgIdx(0);
       recordProductView(staticData.product);
     })();
-  }, [slug, recordProductView]);
+  }, [slug, recordProductView, backendUnavailable]);
 
   const checkPincode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,9 +123,9 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authToken) {
+    if (!authToken || !user) {
       setIsAuthModalOpen(true);
-      notify('Please sign in to post a product review.', 'info');
+      notify('Only signed-in customers can write a product review.', 'info');
       return;
     }
     if (!product) return;
@@ -141,7 +143,12 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
           });
           if (hasJsonContentType(res) && res.status < 500) {
             const json = await res.json();
-            if (!res.ok) throw new Error(json.error || 'Failed to submit review');
+            if (!res.ok) {
+              if (res.status === 401 || res.status === 403) {
+                setIsAuthModalOpen(true);
+              }
+              throw new Error(json.error || 'Failed to submit review');
+            }
             setReviews((prev) => [json.review, ...prev]);
             setProduct((p) => (p ? { ...p, ratingAvg: json.ratingAvg, ratingCount: json.ratingCount } : p));
             setRevTitle('');
@@ -150,7 +157,9 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
             return;
           }
         } catch (err) {
-          if (err instanceof Error && err.message.includes('Failed')) throw err;
+          if (err instanceof Error && (err.message.includes('Failed') || err.message.includes('sign in') || err.message.includes('Authentication'))) {
+            throw err;
+          }
         }
       }
       const staticRes = submitStaticReview(authToken, product.id, {
@@ -202,9 +211,9 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
   const bundlePartner = related[0] || null;
 
   return (
-    <main className="max-w-[1440px] mx-auto px-4 lg:px-8 py-8 space-y-14">
+    <main className="max-w-[1440px] w-full min-w-0 mx-auto px-4 lg:px-8 py-8 space-y-14">
       {/* Breadcrumb */}
-      <nav className="text-xs text-slate-500 flex items-center gap-2 flex-wrap">
+      <nav className="text-xs text-slate-500 flex items-center gap-2 flex-wrap min-w-0">
         <button onClick={() => navigate('/')} className="hover:text-[#EA580C]">
           Home
         </button>
@@ -217,13 +226,13 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
             <span>/</span>
           </>
         )}
-        <span className="text-slate-800 font-medium truncate">{product.name}</span>
+        <span className="text-slate-800 font-medium truncate max-w-full">{product.name}</span>
       </nav>
 
       {/* Main Contiguous PDP Split */}
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+      <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
         {/* Left: Interactive Image Gallery + Magnifier Zoom */}
-        <div className="lg:col-span-6 space-y-4 lg:sticky lg:top-32">
+        <div className="lg:col-span-6 min-w-0 space-y-4 lg:sticky lg:top-32">
           <div
             className="relative aspect-[4/3] w-full rounded-2xl overflow-hidden bg-slate-100 border border-slate-200 cursor-zoom-in"
             onMouseMove={(e) => {
@@ -275,10 +284,10 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
         </div>
 
         {/* Right: Contiguous Purchase Module */}
-        <div className="lg:col-span-6 bg-white border border-slate-200 rounded-2xl p-6 lg:p-8 space-y-6">
+        <div className="lg:col-span-6 min-w-0 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 space-y-6">
           <div className="space-y-2 border-b border-slate-100 pb-5">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="min-w-0 truncate">
                 {product.brand} · SKU <span className="font-mono">{selectedVariant?.sku || product.sku}</span>
               </span>
               <button
@@ -287,7 +296,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
                   navigator.clipboard?.writeText(window.location.href);
                   notify('Product link copied to clipboard.', 'success');
                 }}
-                className="inline-flex items-center gap-1 hover:text-[#EA580C]"
+                className="inline-flex items-center gap-1 hover:text-[#EA580C] shrink-0"
               >
                 <Share2 className="w-3.5 h-3.5" /> Share
               </button>
@@ -295,16 +304,26 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
             <h1 className="font-display text-2xl lg:text-3xl font-bold text-[#0B1F3A] leading-tight">
               {product.name}
             </h1>
-            <div className="flex items-center gap-3 text-sm">
-              <span className="inline-flex items-center gap-1 font-semibold text-[#0B1F3A]">
-                <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                {product.ratingAvg}
-              </span>
-              <span className="text-slate-400">·</span>
-              <span className="text-slate-600 tabular-nums">{product.ratingCount} verified ratings</span>
-              <span className="text-slate-400">·</span>
-              <span className="text-slate-600 tabular-nums">{product.soldCount}+ sold</span>
-            </div>
+            {(Number(product.ratingCount) > 0 || product.soldCount > 0) && (
+              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 text-sm">
+                {Number(product.ratingCount) > 0 && (
+                  <>
+                    <span className="inline-flex items-center gap-1 font-semibold text-[#0B1F3A]">
+                      <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+                      {product.ratingAvg}
+                    </span>
+                    <span className="text-slate-400">·</span>
+                    <span className="text-slate-600 tabular-nums">
+                      {product.ratingCount} verified {product.ratingCount === 1 ? 'rating' : 'ratings'}
+                    </span>
+                    {product.soldCount > 0 && <span className="text-slate-400">·</span>}
+                  </>
+                )}
+                {product.soldCount > 0 && (
+                  <span className="text-slate-600 tabular-nums">{product.soldCount}+ sold</span>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Pricing Block */}
@@ -396,7 +415,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
                 type="button"
                 disabled={availableStock <= 0}
                 onClick={() => addToCart(product, selectedVariant, qty)}
-                className="flex-1 min-w-[160px] h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                className="flex-1 min-w-[130px] sm:min-w-[160px] h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
               >
                 <ShoppingCart className="w-4 h-4" /> Add to Cart
               </button>
@@ -408,7 +427,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
                   const ok = await addToCart(product, selectedVariant, qty);
                   if (ok) navigate('/checkout');
                 }}
-                className="flex-1 min-w-[140px] h-11 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold text-sm transition-colors disabled:opacity-50"
+                className="flex-1 min-w-[120px] sm:min-w-[140px] h-11 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold text-sm transition-colors disabled:opacity-50"
               >
                 Buy Now
               </button>
@@ -519,7 +538,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
 
       {/* Description, Specifications & Frequently Bought Together */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 lg:p-8 space-y-6">
+        <div className="lg:col-span-7 min-w-0 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 space-y-6">
           <div>
             <h2 className="font-display text-xl font-bold text-[#0B1F3A]">Product Overview</h2>
             <p className="text-sm text-slate-700 leading-relaxed mt-2">{product.description}</p>
@@ -530,7 +549,7 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
               {Object.entries(product.specifications || {}).map(([k, v]) => (
                 <div key={k} className="py-2.5 grid grid-cols-3 gap-4">
                   <dt className="text-slate-500 font-medium">{k}</dt>
-                  <dd className="col-span-2 text-slate-900 font-medium">{v}</dd>
+                  <dd className="col-span-2 text-slate-900 font-medium break-words">{v}</dd>
                 </div>
               ))}
             </dl>
@@ -539,13 +558,13 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
 
         {/* Frequently Bought Together */}
         {bundlePartner && (
-          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 lg:p-8 flex flex-col justify-between space-y-5">
+          <div className="lg:col-span-5 min-w-0 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 flex flex-col justify-between space-y-5">
             <div>
               <h2 className="font-display text-xl font-bold text-[#0B1F3A]">Frequently Bought Together</h2>
               <p className="text-xs text-slate-500 mt-1">Complete your setup in a single checkout.</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex-1 p-3 rounded-xl bg-slate-50 border border-slate-200">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <div className="flex-1 min-w-0 p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <img
                   src={activeImage}
                   alt={product.name}
@@ -555,8 +574,8 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
                 <p className="text-xs font-semibold text-[#0B1F3A] line-clamp-1">{product.name}</p>
                 <p className="font-mono text-xs font-bold text-[#EA580C] tabular-nums">{formatINR(unitPrice)}</p>
               </div>
-              <span className="font-bold text-slate-400 text-lg">+</span>
-              <div className="flex-1 p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="font-bold text-slate-400 text-lg shrink-0">+</span>
+              <div className="flex-1 min-w-0 p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <img
                   src={resolveAssetUrl(bundlePartner.images?.[0]?.imageUrl)}
                   alt={bundlePartner.name}
@@ -585,57 +604,80 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
 
       {/* Customer Reviews */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+        <div className="lg:col-span-5 min-w-0 bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
           <h2 className="font-display text-xl font-bold text-[#0B1F3A]">Write a Customer Review</h2>
-          <form onSubmit={handleReviewSubmit} className="space-y-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">Rating</label>
-              <div className="flex gap-1.5">
-                {[1, 2, 3, 4, 5].map((star) => (
-                  <button
-                    key={star}
-                    type="button"
-                    onClick={() => setRevRating(star)}
-                    className="p-1"
-                  >
-                    <Star
-                      className={`w-6 h-6 ${
-                        star <= revRating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'
-                      }`}
-                    />
-                  </button>
-                ))}
-              </div>
+          {!user || !authToken ? (
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-5 space-y-3">
+              <p className="text-sm font-semibold text-[#0B1F3A]">
+                Sign in required to submit a review
+              </p>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Only signed-in customers can rate products and publish reviews on AAGAMAN MART.
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsAuthModalOpen(true)}
+                className="w-full h-10 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-semibold transition-colors"
+              >
+                Sign In to Write a Review
+              </button>
             </div>
-            <input
-              type="text"
-              required
-              value={revTitle}
-              onChange={(e) => setRevTitle(e.target.value)}
-              placeholder="Review headline"
-              className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-            />
-            <textarea
-              required
-              rows={3}
-              value={revComment}
-              onChange={(e) => setRevComment(e.target.value)}
-              placeholder="Share your experience with quality, delivery, and packaging..."
-              className="w-full p-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
-            />
-            <button
-              type="submit"
-              disabled={submittingRev}
-              className="w-full h-10 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-semibold"
-            >
-              {submittingRev ? 'Submitting...' : 'Post Review'}
-            </button>
-          </form>
+          ) : (
+            <form onSubmit={handleReviewSubmit} className="space-y-3">
+              <p className="text-xs text-slate-600">
+                Reviewing as <strong className="text-[#0B1F3A]">{user.name}</strong>
+              </p>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Rating</label>
+                <div className="flex gap-1.5">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setRevRating(star)}
+                      className="p-1"
+                    >
+                      <Star
+                        className={`w-6 h-6 ${
+                          star <= revRating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'
+                        }`}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <input
+                type="text"
+                required
+                minLength={3}
+                value={revTitle}
+                onChange={(e) => setRevTitle(e.target.value)}
+                placeholder="Review headline"
+                className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+              />
+              <textarea
+                required
+                minLength={5}
+                rows={3}
+                value={revComment}
+                onChange={(e) => setRevComment(e.target.value)}
+                placeholder="Share your experience with quality, delivery, and packaging..."
+                className="w-full p-3 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
+              />
+              <button
+                type="submit"
+                disabled={submittingRev}
+                className="w-full h-10 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-semibold"
+              >
+                {submittingRev ? 'Submitting...' : 'Post Review'}
+              </button>
+            </form>
+          )}
         </div>
 
-        <div className="lg:col-span-7 space-y-4">
+        <div className="lg:col-span-7 min-w-0 space-y-4">
           <h2 className="font-display text-xl font-bold text-[#0B1F3A]">
-            Verified Customer Reviews ({reviews.length})
+            Customer Reviews ({reviews.length})
           </h2>
           {reviews.length === 0 ? (
             <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-xl p-6">

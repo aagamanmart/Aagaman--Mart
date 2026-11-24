@@ -12,7 +12,7 @@ import {
 import type { Product } from '../types';
 
 export const HomePage: React.FC = () => {
-  const { config, categories, publicCoupons, navigate, recentlyViewed, notify } = useStore();
+  const { config, categories, publicCoupons, navigate, recentlyViewed, notify, backendUnavailable } = useStore();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [heroIndex, setHeroIndex] = useState(0);
@@ -40,7 +40,7 @@ export const HomePage: React.FC = () => {
       }
       setProducts(queryStaticProducts({ limit: 40 }).products);
     })();
-  }, []);
+  }, [backendUnavailable, categories.length]);
 
   const banners = config?.banners || [];
   const activeBanner = banners[heroIndex] || banners[0];
@@ -117,12 +117,12 @@ export const HomePage: React.FC = () => {
   };
 
   return (
-    <main className="space-y-14 pb-12">
+    <main className="w-full min-w-0 space-y-12 sm:space-y-14 pb-12 overflow-x-clip">
       {/* 1. Promotional Hero Slider */}
       <section className="relative bg-[#0B1F3A] text-white overflow-hidden">
         <div className="max-w-[1440px] mx-auto relative">
           {activeBanner && (
-            <div className="relative min-h-[380px] lg:min-h-[480px] flex items-center">
+            <div className="relative min-h-[360px] sm:min-h-[380px] lg:min-h-[480px] flex items-center">
               <img
                 src={resolveAssetUrl(activeBanner.imageUrl)}
                 alt={activeBanner.title}
@@ -131,11 +131,11 @@ export const HomePage: React.FC = () => {
               />
               <div className="absolute inset-0 bg-gradient-to-r from-[#0B1F3A]/95 via-[#0B1F3A]/75 to-[#0B1F3A]/20" />
 
-              <div className="relative z-10 px-6 lg:px-14 py-14 max-w-2xl space-y-5">
+              <div className="relative z-10 px-4 sm:px-6 lg:px-14 py-10 sm:py-14 w-full max-w-2xl min-w-0 space-y-4 sm:space-y-5">
                 <p className="text-xs font-semibold uppercase tracking-wider text-[#FDBA74]">
                   {activeBanner.kicker}
                 </p>
-                <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight text-balance">
+                <h1 className="font-display text-2xl sm:text-4xl lg:text-5xl font-bold leading-tight text-balance">
                   {activeBanner.title}
                 </h1>
                 <p className="text-sm sm:text-base text-slate-200 leading-relaxed max-w-xl">
@@ -151,7 +151,7 @@ export const HomePage: React.FC = () => {
                           : `/category/${activeBanner.categorySlug}`
                       )
                     }
-                    className="px-6 py-3 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center gap-2 transition-colors whitespace-nowrap"
+                    className="px-4 sm:px-6 py-2.5 sm:py-3 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center gap-2 transition-colors whitespace-nowrap"
                   >
                     <span>{activeBanner.ctaLabel}</span>
                     <ArrowRight className="w-4 h-4" />
@@ -159,7 +159,7 @@ export const HomePage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => navigate('/shop')}
-                    className="px-6 py-3 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold text-sm border border-white/20 transition-colors whitespace-nowrap"
+                    className="px-4 sm:px-6 py-2.5 sm:py-3 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold text-sm border border-white/20 transition-colors whitespace-nowrap"
                   >
                     Explore All Products
                   </button>
@@ -172,7 +172,7 @@ export const HomePage: React.FC = () => {
                     type="button"
                     aria-label="Previous slide"
                     onClick={() => setHeroIndex((i) => (i - 1 + banners.length) % banners.length)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center"
+                    className="hidden sm:flex absolute left-3 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white items-center justify-center"
                   >
                     <ChevronLeft className="w-5 h-5" />
                   </button>
@@ -180,11 +180,11 @@ export const HomePage: React.FC = () => {
                     type="button"
                     aria-label="Next slide"
                     onClick={() => setHeroIndex((i) => (i + 1) % banners.length)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center"
+                    className="hidden sm:flex absolute right-3 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/40 hover:bg-black/60 text-white items-center justify-center"
                   >
                     <ChevronRight className="w-5 h-5" />
                   </button>
-                  <div className="absolute bottom-5 left-6 lg:left-14 z-20 flex gap-2">
+                  <div className="absolute bottom-4 sm:bottom-5 left-4 sm:left-6 lg:left-14 z-20 flex gap-2">
                     {banners.map((b, idx) => (
                       <button
                         key={b.id}
@@ -207,7 +207,7 @@ export const HomePage: React.FC = () => {
       {/* 2. Grand Aagaman Sale & Top Deals of the Day */}
       <section className="max-w-[1440px] mx-auto px-4 lg:px-8 space-y-6">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-4">
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-semibold text-[#EA580C] uppercase tracking-wider">
               {config?.flashSaleTitle || 'Grand Aagaman Sale'} · Top Deals of the Day
             </p>
@@ -218,8 +218,8 @@ export const HomePage: React.FC = () => {
               {config?.flashSaleSubtitle || 'Direct savings across verified electronics, footwear, and appliances.'}
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 bg-[#0B1F3A] text-white px-4 py-2 rounded-lg text-xs">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+            <div className="flex items-center gap-2 bg-[#0B1F3A] text-white px-3.5 sm:px-4 py-2 rounded-lg text-xs">
               <Clock className="w-4 h-4 text-[#F97316]" />
               <span className="text-slate-300">Ends in</span>
               <span className="font-mono font-bold text-sm tabular-nums">
@@ -257,15 +257,15 @@ export const HomePage: React.FC = () => {
             {publicCoupons.slice(0, 3).map((c) => (
               <div
                 key={c.code}
-                className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between gap-3"
+                className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between gap-3 min-w-0"
               >
-                <div className="flex items-start gap-3">
+                <div className="flex items-start gap-3 min-w-0">
                   <div className="w-9 h-9 rounded-lg bg-orange-50 text-[#EA580C] flex items-center justify-center shrink-0">
                     <Tag className="w-4 h-4" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <p className="font-mono text-sm font-bold text-[#0B1F3A]">{c.code}</p>
-                    <p className="text-xs text-slate-600 mt-0.5">{c.description}</p>
+                    <p className="text-xs text-slate-600 mt-0.5 break-words">{c.description}</p>
                   </div>
                 </div>
                 <button
@@ -338,7 +338,7 @@ export const HomePage: React.FC = () => {
           <h2 className="font-display text-2xl lg:text-3xl font-bold text-[#0B1F3A]">
             Marketplace Collections
           </h2>
-          <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl overflow-x-auto no-scrollbar">
+          <div className="w-full lg:w-auto max-w-full min-w-0 flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl overflow-x-auto no-scrollbar">
             {[
               { key: 'bestseller', label: 'Best Selling' },
               { key: 'new', label: 'New Arrivals' },
@@ -402,7 +402,7 @@ export const HomePage: React.FC = () => {
 
       {/* 5. Verified Customer Reviews & Newsletter */}
       <section className="max-w-[1440px] mx-auto px-4 lg:px-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 lg:p-8 space-y-5">
+        <div className="lg:col-span-2 min-w-0 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 space-y-5">
           <div>
             <h2 className="font-display text-2xl font-bold text-[#0B1F3A]">
               Trusted by Indian Shoppers
@@ -426,7 +426,7 @@ export const HomePage: React.FC = () => {
                   'Ordered the Aurora Pro ANC headphones during the Grand Aagaman Sale via UPI. Verified sealed unit arrived in 24 hours with 10% instant coupon savings.',
               },
             ].map((t) => (
-              <div key={t.name} className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <div key={t.name} className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3 min-w-0">
                 <div className="flex gap-1">
                   {[1, 2, 3, 4, 5].map((s) => (
                     <Star key={s} className="w-4 h-4 fill-amber-400 text-amber-400" />
@@ -443,7 +443,7 @@ export const HomePage: React.FC = () => {
         </div>
 
         {/* Newsletter Subscription */}
-        <div className="bg-[#0B1F3A] text-white rounded-2xl p-6 lg:p-8 flex flex-col justify-between space-y-5">
+        <div className="min-w-0 bg-[#0B1F3A] text-white rounded-2xl p-5 sm:p-6 lg:p-8 flex flex-col justify-between space-y-5">
           <div className="space-y-3">
             <div className="w-10 h-10 rounded-lg bg-[#EA580C] flex items-center justify-center">
               <Mail className="w-5 h-5 text-white" />

@@ -102,14 +102,18 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
             {product.name}
           </a>
 
-          <div className="flex items-center gap-2 text-xs text-slate-600 pt-0.5">
-            <span className="inline-flex items-center gap-1 font-semibold text-slate-800">
-              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-              {product.ratingAvg}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{product.ratingCount} reviews</span>
-          </div>
+          {Number(product.ratingCount) > 0 && (
+            <div className="flex items-center gap-2 text-xs text-slate-600 pt-0.5">
+              <span className="inline-flex items-center gap-1 font-semibold text-slate-800">
+                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                {product.ratingAvg}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">
+                {product.ratingCount} {product.ratingCount === 1 ? 'review' : 'reviews'}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="space-y-2.5 pt-2 border-t border-slate-100">

@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Package,
   Pencil,
+  Percent,
   Phone,
   Plus,
   Search,
@@ -46,6 +47,8 @@ import {
   toggleFirestoreCustomerBlock,
 } from '../lib/firestore-sync';
 import {
+  applyRuntimeCatalogSync,
+  applyStaticBulkDiscount,
   createStaticAdminCategory,
   createStaticAdminCoupon,
   createStaticAdminProduct,
@@ -317,6 +320,12 @@ export const AdminPage: React.FC = () => {
   const [testPinStdRes, setTestPinStdRes] = useState<PincodeCheckResult | null>(null);
   const [testPinExpRes, setTestPinExpRes] = useState<PincodeCheckResult | null>(null);
 
+  // Bulk Product Discount State
+  const [bulkDiscountScope, setBulkDiscountScope] = useState<'all' | 'category'>('all');
+  const [bulkDiscountCategoryId, setBulkDiscountCategoryId] = useState(1);
+  const [bulkDiscountPercent, setBulkDiscountPercent] = useState(15);
+  const [applyingBulkDiscount, setApplyingBulkDiscount] = useState(false);
+
   // Add Product Form
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [newProd, setNewProd] = useState({
@@ -440,12 +449,21 @@ export const AdminPage: React.FC = () => {
 
       setFirebaseAdminConnected(isFirebaseBootstrappedAdmin());
       try {
-        const [rtCustRes, rtCfgRes, fsCustomers, fsConfig] = await Promise.all([
+        const [rtCustRes, rtCfgRes, rtCatRes, fsCustomers, fsConfig] = await Promise.all([
           fetch('/api/runtime/customers', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
           fetch('/api/runtime/config').catch(() => null),
+          fetch('/api/runtime/catalog').catch(() => null),
           fetchFirestoreCustomersAsAdmin().catch(() => [] as AdminCustomerItem[]),
           fetchFirestoreStoreConfig().catch(() => null),
         ]);
+        if (rtCatRes && isJsonApiResponse(rtCatRes)) {
+          const rtCatJson = await rtCatRes.json();
+          applyRuntimeCatalogSync({
+            productDiscounts: rtCatJson.productDiscounts,
+            reviews: rtCatJson.reviews,
+          });
+          setAdminProducts(getStaticAdminProducts());
+        }
 
         const byEmail = new Map<string, AdminCustomerItem>();
         const mergeCustomer = (incomingCust: AdminCustomerItem) => {
@@ -1333,6 +1351,137 @@ export const AdminPage: React.FC = () => {
         {/* PRODUCTS */}
         {tab === 'products' && (
           <div className="space-y-5">
+            {/* Bulk & Category Product Discount Manager */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-sm font-bold text-[#0B1F3A] flex items-center gap-2">
+                    <Percent className="w-4 h-4 text-[#EA580C]" /> Storewide &amp; Category Discount Control
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Set exact product discount percentage (0%–95%) across all products or a category, or edit individual discounts below.
+                  </p>
+                </div>
+                <span className="text-xs font-mono text-slate-600 tabular-nums">
+                  Preview: ₹10,000 MRP → {formatINR(Math.max(1, Math.round(10000 * (1 - bulkDiscountPercent / 100))))}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end text-xs">
+                <div className="sm:col-span-3">
+                  <label className="block text-slate-500 font-medium mb-1">Apply To</label>
+                  <select
+                    value={bulkDiscountScope}
+                    onChange={(e) => setBulkDiscountScope(e.target.value as 'all' | 'category')}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                  >
+                    <option value="all">All Store Products ({adminProducts.length})</option>
+                    <option value="category">Specific Category</option>
+                  </select>
+                </div>
+
+                {bulkDiscountScope === 'category' && (
+                  <div className="sm:col-span-3">
+                    <label className="block text-slate-500 font-medium mb-1">Category</label>
+                    <select
+                      value={bulkDiscountCategoryId}
+                      onChange={(e) => setBulkDiscountCategoryId(Number(e.target.value))}
+                      className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                    >
+                      {adminCategories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div className={bulkDiscountScope === 'category' ? 'sm:col-span-3' : 'sm:col-span-4'}>
+                  <label className="block text-slate-500 font-medium mb-1">Discount Percentage (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={95}
+                    value={bulkDiscountPercent}
+                    onChange={(e) => setBulkDiscountPercent(Math.max(0, Math.min(95, Number(e.target.value) || 0)))}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+
+                <div className={bulkDiscountScope === 'category' ? 'sm:col-span-3' : 'sm:col-span-5'}>
+                  <button
+                    type="button"
+                    disabled={applyingBulkDiscount}
+                    onClick={async () => {
+                      setApplyingBulkDiscount(true);
+                      try {
+                        if (isStaticToken(adminToken)) {
+                          const res = applyStaticBulkDiscount({
+                            scope: bulkDiscountScope,
+                            categoryId: bulkDiscountScope === 'category' ? bulkDiscountCategoryId : undefined,
+                            discountPercent: bulkDiscountPercent,
+                          });
+                          notify(
+                            `Applied ${res.discountPercent}% discount across ${res.updatedCount} products.`,
+                            'success'
+                          );
+                          await loadAllAdminData(adminToken);
+                          refreshStoreMeta();
+                          return;
+                        }
+                        const res = await fetch('/api/admin/products/bulk-discount', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${adminToken}`,
+                          },
+                          body: JSON.stringify({
+                            scope: bulkDiscountScope,
+                            categoryId: bulkDiscountScope === 'category' ? bulkDiscountCategoryId : undefined,
+                            discountPercent: bulkDiscountPercent,
+                          }),
+                        });
+                        const json = await res.json();
+                        if (!res.ok) notify(json.error || 'Failed to apply discount.', 'error');
+                        else {
+                          notify(
+                            `Applied ${json.discountPercent}% discount across ${json.updatedCount} products.`,
+                            'success'
+                          );
+                          await loadAllAdminData(adminToken);
+                          refreshStoreMeta();
+                        }
+                      } finally {
+                        setApplyingBulkDiscount(false);
+                      }
+                    }}
+                    className="w-full h-9 px-4 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white font-semibold disabled:opacity-60"
+                  >
+                    {applyingBulkDiscount ? 'Applying...' : `Apply ${bulkDiscountPercent}% Discount`}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="text-slate-500 mr-1">Quick presets:</span>
+                {[0, 10, 15, 20, 30, 40, 50].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => setBulkDiscountPercent(pct)}
+                    className={`px-2.5 py-1 rounded-md border font-mono font-semibold transition-colors ${
+                      bulkDiscountPercent === pct
+                        ? 'bg-[#EA580C] text-white border-[#EA580C]'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-[#EA580C]'
+                    }`}
+                  >
+                    {pct === 0 ? '0% (MRP)' : `${pct}% off`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2.5">
                 <div className="relative">
@@ -1433,22 +1582,50 @@ export const AdminPage: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <input
-                  type="number"
-                  required
-                  placeholder="MRP ₹"
-                  value={newProd.mrp}
-                  onChange={(e) => setNewProd({ ...newProd, mrp: Number(e.target.value) })}
-                  className="h-9 px-3 rounded-lg border border-slate-300 font-mono"
-                />
-                <input
-                  type="number"
-                  required
-                  placeholder="Selling Price ₹"
-                  value={newProd.sellingPrice}
-                  onChange={(e) => setNewProd({ ...newProd, sellingPrice: Number(e.target.value) })}
-                  className="h-9 px-3 rounded-lg border border-slate-300 font-mono"
-                />
+                <div>
+                  <label className="block text-[11px] text-slate-500 mb-0.5">MRP (₹)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    placeholder="MRP ₹"
+                    value={newProd.mrp}
+                    onChange={(e) => setNewProd({ ...newProd, mrp: Number(e.target.value) })}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 mb-0.5">Discount (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={95}
+                    value={
+                      newProd.mrp > 0
+                        ? Math.max(0, Math.round(((newProd.mrp - newProd.sellingPrice) / newProd.mrp) * 100))
+                        : 0
+                    }
+                    onChange={(e) => {
+                      const pct = Math.max(0, Math.min(95, Number(e.target.value) || 0));
+                      const nextPrice = Math.max(1, Math.round(newProd.mrp * (1 - pct / 100)));
+                      setNewProd({ ...newProd, sellingPrice: nextPrice });
+                    }}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 mb-0.5">Selling Price (₹)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={newProd.mrp || undefined}
+                    required
+                    placeholder="Selling Price ₹"
+                    value={newProd.sellingPrice}
+                    onChange={(e) => setNewProd({ ...newProd, sellingPrice: Number(e.target.value) })}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
                 <input
                   type="number"
                   required
@@ -1465,7 +1642,7 @@ export const AdminPage: React.FC = () => {
                   onChange={(e) => setNewProd({ ...newProd, gstPercent: Number(e.target.value) })}
                   className="h-9 px-3 rounded-lg border border-slate-300 font-mono"
                 />
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 sm:col-span-3">
                   <ProductThumbnail src={newProd.imageUrl} alt="New product preview" className="w-9 h-9" />
                   <input
                     required
@@ -1510,6 +1687,7 @@ export const AdminPage: React.FC = () => {
                     <th className="py-3 px-4">Product & Image</th>
                     <th className="py-3 px-4">Category</th>
                     <th className="py-3 px-4 text-right">Price (₹)</th>
+                    <th className="py-3 px-4 text-right">Discount</th>
                     <th className="py-3 px-4 text-right">Stock</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Actions</th>
@@ -1557,6 +1735,15 @@ export const AdminPage: React.FC = () => {
                                 {formatINR(p.mrp)}
                               </span>
                             )}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums">
+                            <span
+                              className={`font-semibold ${
+                                p.discountPercent > 0 ? 'text-[#EA580C]' : 'text-slate-400'
+                              }`}
+                            >
+                              {p.discountPercent}% off
+                            </span>
                           </td>
                           <td className="py-3 px-4 text-right font-mono tabular-nums">
                             <button
@@ -3259,7 +3446,33 @@ export const AdminPage: React.FC = () => {
                     min={1}
                     required
                     value={editForm.mrp}
-                    onChange={(e) => setEditForm({ ...editForm, mrp: Number(e.target.value) })}
+                    onChange={(e) => {
+                      const nextMrp = Math.max(1, Number(e.target.value) || 1);
+                      setEditForm({
+                        ...editForm,
+                        mrp: nextMrp,
+                        sellingPrice: Math.min(nextMrp, editForm.sellingPrice),
+                      });
+                    }}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-medium mb-1">Discount (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={95}
+                    value={
+                      editForm.mrp > 0
+                        ? Math.max(0, Math.round(((editForm.mrp - editForm.sellingPrice) / editForm.mrp) * 100))
+                        : 0
+                    }
+                    onChange={(e) => {
+                      const pct = Math.max(0, Math.min(95, Number(e.target.value) || 0));
+                      const nextPrice = Math.max(1, Math.round(editForm.mrp * (1 - pct / 100)));
+                      setEditForm({ ...editForm, sellingPrice: nextPrice });
+                    }}
                     className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
                   />
                 </div>
@@ -3268,35 +3481,44 @@ export const AdminPage: React.FC = () => {
                   <input
                     type="number"
                     min={1}
+                    max={editForm.mrp || undefined}
                     required
                     value={editForm.sellingPrice}
                     onChange={(e) => setEditForm({ ...editForm, sellingPrice: Number(e.target.value) })}
                     className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate-500 font-medium mb-1">Stock</label>
-                    <input
-                      type="number"
-                      min={0}
-                      required
-                      value={editForm.stock}
-                      onChange={(e) => setEditForm({ ...editForm, stock: Number(e.target.value) })}
-                      className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 font-medium mb-1">GST (%)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={28}
-                      required
-                      value={editForm.gstPercent}
-                      onChange={(e) => setEditForm({ ...editForm, gstPercent: Number(e.target.value) })}
-                      className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
-                    />
+                <div>
+                  <label className="block text-slate-500 font-medium mb-1">Stock</label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={editForm.stock}
+                    onChange={(e) => setEditForm({ ...editForm, stock: Number(e.target.value) })}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-medium mb-1">GST (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={28}
+                    required
+                    value={editForm.gstPercent}
+                    onChange={(e) => setEditForm({ ...editForm, gstPercent: Number(e.target.value) })}
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <div className="w-full h-9 px-3 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-between font-mono text-xs">
+                    <span className="text-slate-600">Savings</span>
+                    <strong className="text-[#EA580C]">
+                      {editForm.mrp > 0
+                        ? `${Math.max(0, Math.round(((editForm.mrp - editForm.sellingPrice) / editForm.mrp) * 100))}% (${formatINR(Math.max(0, editForm.mrp - editForm.sellingPrice))})`
+                        : '0%'}
+                    </strong>
                   </div>
                 </div>
               </div>

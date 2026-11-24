@@ -113,7 +113,7 @@ export const Navbar: React.FC = () => {
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full bg-[#0B1F3A] text-white shadow-sm">
+    <header className="sticky top-0 z-40 w-full max-w-full overflow-x-clip bg-[#0B1F3A] text-white shadow-sm">
       {/* Slim Dismissible Announcement Bar */}
       {(() => {
         const announcementMsg =
@@ -123,9 +123,9 @@ export const Navbar: React.FC = () => {
         const isEnabled = config?.announcementEnabled !== false && Boolean(announcementMsg);
         if (!showAnnouncement || !isEnabled) return null;
         return (
-          <div className="bg-[#EA580C] text-white text-xs font-medium px-4 py-1.5 flex items-center justify-between">
-            <div className="w-6 shrink-0" />
-            <p className="truncate text-center">{announcementMsg}</p>
+          <div className="bg-[#EA580C] text-white text-xs font-medium px-3 sm:px-4 py-1.5 flex items-center justify-between gap-2 w-full overflow-hidden">
+            <div className="hidden sm:block w-6 shrink-0" />
+            <p className="min-w-0 flex-1 truncate text-center">{announcementMsg}</p>
             <button
               onClick={() => setShowAnnouncement(false)}
               aria-label="Dismiss announcement"
@@ -138,13 +138,13 @@ export const Navbar: React.FC = () => {
       })()}
 
       {/* Main Header Row */}
-      <div className="max-w-[1440px] mx-auto px-4 lg:px-8 h-16 flex items-center justify-between gap-4 lg:gap-8">
+      <div className="max-w-[1440px] w-full mx-auto px-3 sm:px-4 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4 lg:gap-8 min-w-0">
         {/* Left: Brand Wordmark + Mobile Menu */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
           <button
             onClick={() => setMobileMenuOpen((v) => !v)}
             aria-label="Toggle menu"
-            className="lg:hidden p-2 -ml-2 rounded-lg hover:bg-white/10 transition-colors"
+            className="lg:hidden p-1.5 sm:p-2 -ml-1 rounded-lg hover:bg-white/10 transition-colors shrink-0"
           >
             {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
@@ -154,12 +154,12 @@ export const Navbar: React.FC = () => {
               e.preventDefault();
               navigate('/');
             }}
-            className="font-display text-xl lg:text-2xl font-bold tracking-tight text-white whitespace-nowrap shrink-0 flex items-center gap-2"
+            className="font-display text-base sm:text-xl lg:text-2xl font-bold tracking-tight text-white whitespace-nowrap min-w-0 flex items-center gap-1.5 sm:gap-2"
           >
-            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-[#EA580C] text-white font-extrabold text-sm">
+            <span className="inline-flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#EA580C] text-white font-extrabold text-xs sm:text-sm shrink-0">
               AM
             </span>
-            <span>AAGAMAN MART</span>
+            <span className="truncate">AAGAMAN MART</span>
           </a>
         </div>
 
@@ -252,7 +252,7 @@ export const Navbar: React.FC = () => {
         </div>
 
         {/* Right: Actions (Pincode, Compare, Account, Wishlist, Cart) */}
-        <div className="flex items-center gap-2 lg:gap-4 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-2 lg:gap-4 shrink-0">
           <button
             type="button"
             onClick={() => setPincodeModalOpen(true)}
@@ -280,7 +280,8 @@ export const Navbar: React.FC = () => {
           <button
             type="button"
             onClick={() => (user ? navigate('/account') : setIsAuthModalOpen(true))}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/10 text-sm font-medium transition-colors whitespace-nowrap shrink-0"
+            aria-label={user ? 'Account' : 'Sign In'}
+            className="flex items-center gap-1.5 sm:gap-2 p-2 sm:px-3 sm:py-2 rounded-lg hover:bg-white/10 text-sm font-medium transition-colors whitespace-nowrap shrink-0"
           >
             <User className="w-4 h-4 text-[#F97316]" />
             <span className="hidden sm:inline max-w-[110px] truncate">
@@ -306,7 +307,7 @@ export const Navbar: React.FC = () => {
             type="button"
             onClick={() => setIsCartOpen(true)}
             aria-label="Shopping Cart"
-            className="relative flex items-center gap-2 px-3 py-2 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
+            className="relative flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
           >
             <ShoppingCart className="w-4 h-4" />
             <span className="hidden sm:inline">Cart</span>
@@ -318,14 +319,14 @@ export const Navbar: React.FC = () => {
       </div>
 
       {/* Mobile Search Bar */}
-      <div className="md:hidden px-4 pb-3">
-        <form onSubmit={handleSearchSubmit} className="relative flex items-center">
+      <div className="md:hidden px-3 sm:px-4 pb-3 w-full">
+        <form onSubmit={handleSearchSubmit} className="relative flex items-center w-full">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search products, brands..."
-            className="w-full h-10 pl-3.5 pr-11 rounded-lg bg-white text-slate-900 placeholder-slate-400 text-sm focus:outline-none"
+            className="w-full min-w-0 h-10 pl-3.5 pr-11 rounded-lg bg-white text-slate-900 placeholder-slate-400 text-sm focus:outline-none"
           />
           <button
             type="submit"
@@ -338,8 +339,8 @@ export const Navbar: React.FC = () => {
       </div>
 
       {/* Clean Secondary Category & Navigation Strip */}
-      <nav className="bg-[#102A43] border-t border-white/10">
-        <div className="max-w-[1440px] mx-auto px-4 lg:px-8 h-10 flex items-center gap-6 overflow-x-auto no-scrollbar text-xs font-medium text-slate-200">
+      <nav className="bg-[#102A43] border-t border-white/10 w-full overflow-hidden">
+        <div className="max-w-[1440px] w-full mx-auto px-3 sm:px-4 lg:px-8 h-10 flex items-center gap-5 sm:gap-6 overflow-x-auto no-scrollbar text-xs font-medium text-slate-200">
           <button
             type="button"
             onClick={() => navigate('/shop')}

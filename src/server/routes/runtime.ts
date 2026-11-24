@@ -41,9 +41,29 @@ export interface RuntimeCustomerRecord {
   recentOrders: Array<{ orderNumber: string; status: string; grandTotal: number; createdAt: string }>;
 }
 
+export interface RuntimeProductDiscountOverride {
+  mrp: number;
+  sellingPrice: number;
+  discountPercent: number;
+}
+
+export interface RuntimeReviewItem {
+  id: number;
+  productId: number;
+  userId: number;
+  authorName: string;
+  rating: number;
+  title: string;
+  comment: string;
+  isVerifiedPurchase: boolean;
+  createdAt: string;
+}
+
 interface RuntimePersistedData {
   customers: RuntimeCustomerRecord[];
   config: Record<string, unknown> | null;
+  productDiscounts?: Record<string, RuntimeProductDiscountOverride>;
+  reviews?: RuntimeReviewItem[];
 }
 
 const RUNTIME_STORE_FILE = path.resolve(process.cwd(), '.aagaman-runtime-store.json');
@@ -52,6 +72,8 @@ const runtimeAuthLimiter = createRateLimiter(60_000, 40);
 
 const customerMap = new Map<string, RuntimeCustomerRecord>();
 let runtimeConfig: Record<string, unknown> | null = null;
+let runtimeProductDiscounts: Record<string, RuntimeProductDiscountOverride> = {};
+let runtimeReviews: RuntimeReviewItem[] = [];
 let loadedFromDisk = false;
 
 export function getRuntimeStoreConfig(): Record<string, unknown> | null {
@@ -87,6 +109,12 @@ function ensureLoaded() {
       if (parsed.config && typeof parsed.config === 'object') {
         runtimeConfig = parsed.config;
       }
+      if (parsed.productDiscounts && typeof parsed.productDiscounts === 'object') {
+        runtimeProductDiscounts = parsed.productDiscounts;
+      }
+      if (Array.isArray(parsed.reviews)) {
+        runtimeReviews = parsed.reviews;
+      }
     }
   } catch {
     // Ignore read errors in ephemeral environments
@@ -98,6 +126,8 @@ function persistToDisk() {
     const payload: RuntimePersistedData = {
       customers: Array.from(customerMap.values()),
       config: runtimeConfig,
+      productDiscounts: runtimeProductDiscounts,
+      reviews: runtimeReviews,
     };
     fs.writeFileSync(RUNTIME_STORE_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch {
@@ -394,4 +424,89 @@ runtimeRouter.put('/runtime/config', requireRuntimeAdmin, (req, res) => {
   runtimeConfig = parsed.data.config;
   persistToDisk();
   res.json({ ok: true, config: runtimeConfig });
+});
+
+runtimeRouter.get('/runtime/catalog', (_req, res) => {
+  ensureLoaded();
+  res.json({
+    productDiscounts: runtimeProductDiscounts,
+    reviews: runtimeReviews,
+  });
+});
+
+runtimeRouter.put('/runtime/catalog/discounts', requireRuntimeAdmin, (req, res) => {
+  ensureLoaded();
+  const schema = z.object({
+    items: z
+      .array(
+        z.object({
+          productId: z.number().int().positive(),
+          mrp: z.number().int().positive(),
+          sellingPrice: z.number().int().positive(),
+          discountPercent: z.number().int().min(0).max(95),
+        })
+      )
+      .min(1)
+      .max(500),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Invalid product discount payload.' });
+  }
+  for (const item of parsed.data.items) {
+    const safePrice = Math.min(item.mrp, Math.max(1, item.sellingPrice));
+    runtimeProductDiscounts[String(item.productId)] = {
+      mrp: item.mrp,
+      sellingPrice: safePrice,
+      discountPercent: Math.max(0, Math.min(95, item.discountPercent)),
+    };
+  }
+  persistToDisk();
+  res.json({ ok: true, productDiscounts: runtimeProductDiscounts });
+});
+
+runtimeRouter.post('/runtime/reviews', (req, res) => {
+  ensureLoaded();
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ') || authHeader.slice(7).trim().length < 5) {
+    return res.status(401).json({ error: 'Only signed-in customers can post a review.' });
+  }
+  const schema = z.object({
+    id: z.number().int().positive().optional(),
+    productId: z.number().int().positive(),
+    customerEmail: z.string().email(),
+    authorName: z.string().min(1).max(120),
+    rating: z.number().int().min(1).max(5),
+    title: z.string().min(3).max(140),
+    comment: z.string().min(5).max(1200),
+    isVerifiedPurchase: z.boolean().optional().default(false),
+    createdAt: z.string().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Please sign in and enter a valid review.' });
+  }
+  const customerKey = parsed.data.customerEmail.trim().toLowerCase();
+  const customer = customerMap.get(customerKey);
+  if (!customer || customer.isBlocked) {
+    return res.status(401).json({ error: 'Please sign in with an active customer account to post a review.' });
+  }
+
+  const reviewItem: RuntimeReviewItem = {
+    id: parsed.data.id || Date.now(),
+    productId: parsed.data.productId,
+    userId: customer.id,
+    authorName: customer.name || parsed.data.authorName.trim(),
+    rating: parsed.data.rating,
+    title: parsed.data.title.trim(),
+    comment: parsed.data.comment.trim(),
+    isVerifiedPurchase: Boolean(parsed.data.isVerifiedPurchase),
+    createdAt: parsed.data.createdAt || new Date().toISOString(),
+  };
+
+  if (!runtimeReviews.some((r) => r.id === reviewItem.id)) {
+    runtimeReviews = [reviewItem, ...runtimeReviews].slice(0, 1000);
+    persistToDisk();
+  }
+  res.status(201).json({ ok: true, review: reviewItem });
 });

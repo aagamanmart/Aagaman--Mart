@@ -140,6 +140,7 @@ interface StaticDatabase {
   returns: StaticReturnRecord[];
   tickets: StaticTicketRecord[];
   newsletterEmails: string[];
+  reviewsCleanedV1?: boolean;
 }
 
 function createInitialStaticDb(): StaticDatabase {
@@ -838,41 +839,12 @@ function createInitialStaticDb(): StaticDatabase {
 
   let nextImgId = 1;
   let nextVarId = 1;
-  let nextReviewId = 1;
   const reviews: Review[] = [];
 
   const products: Product[] = rawProducts.map((p, idx) => {
     const prodId = idx + 1;
     const cat = catBySlug.get(p.categorySlug) || categories[0];
     const discountPercent = Math.round(((p.mrp - p.sellingPrice) / p.mrp) * 100);
-    if (p.isFeatured) {
-      reviews.push(
-        {
-          id: nextReviewId++,
-          productId: prodId,
-          userId: 1,
-          authorName: 'Arjun Mehta · Mumbai',
-          rating: 5,
-          title: 'Exceptional build quality and fast next-day delivery',
-          comment:
-            'Ordered on AAGAMAN MART with UPI and received genuine sealed packaging the very next afternoon. Matches every specification.',
-          isVerifiedPurchase: true,
-          createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-        },
-        {
-          id: nextReviewId++,
-          productId: prodId,
-          userId: 1,
-          authorName: 'Priya Nair · Bengaluru',
-          rating: 5,
-          title: 'Worth every rupee during the Grand Aagaman Sale',
-          comment:
-            'Applied AAGAMAN10 at checkout for instant savings. Packaging was secure and GST invoice was ready immediately in My Orders.',
-          isVerifiedPurchase: true,
-          createdAt: new Date(Date.now() - 86400000 * 6).toISOString(),
-        }
-      );
-    }
 
     return {
       id: prodId,
@@ -892,8 +864,8 @@ function createInitialStaticDb(): StaticDatabase {
       gstPercent: p.gstPercent,
       specifications: p.specifications,
       returnPolicy: p.returnPolicy,
-      ratingAvg: p.ratingAvg,
-      ratingCount: p.ratingCount,
+      ratingAvg: '0.0',
+      ratingCount: 0,
       soldCount: p.soldCount,
       isFeatured: Boolean(p.isFeatured),
       isTrending: Boolean(p.isTrending),
@@ -1048,6 +1020,7 @@ function createInitialStaticDb(): StaticDatabase {
     returns: [],
     tickets: [],
     newsletterEmails: [],
+    reviewsCleanedV1: true,
   };
 }
 
@@ -1059,6 +1032,30 @@ function loadStaticDb(): StaticDatabase {
       if (parsed && Array.isArray(parsed.categories) && Array.isArray(parsed.products)) {
         if (parsed.config) {
           parsed.config.deliveryConfig = normalizeDeliveryConfig(parsed.config.deliveryConfig);
+        }
+        if (!parsed.reviewsCleanedV1) {
+          parsed.reviews = (parsed.reviews || []).filter(
+            (r) =>
+              !(
+                r.userId === 1 &&
+                (r.authorName === 'Arjun Mehta · Mumbai' || r.authorName === 'Priya Nair · Bengaluru')
+              )
+          );
+          const revMap = new Map<number, number[]>();
+          for (const r of parsed.reviews) {
+            const list = revMap.get(r.productId) || [];
+            list.push(r.rating);
+            revMap.set(r.productId, list);
+          }
+          parsed.products = parsed.products.map((p) => {
+            const ratings = revMap.get(p.id) || [];
+            const ratingCount = ratings.length;
+            const ratingAvg =
+              ratingCount > 0 ? (ratings.reduce((s, v) => s + v, 0) / ratingCount).toFixed(1) : '0.0';
+            return { ...p, ratingCount, ratingAvg };
+          });
+          parsed.reviewsCleanedV1 = true;
+          saveStaticDb(parsed);
         }
         return parsed;
       }
@@ -1117,6 +1114,114 @@ export async function syncStaticConfigToServer(token: string, config: StoreConfi
     });
   } catch {
     // ignore offline sync failures
+  }
+}
+
+export async function syncStaticDiscountsToServer(
+  token: string,
+  products: Array<{ id: number; mrp: number; sellingPrice: number; discountPercent: number }>
+): Promise<void> {
+  if (products.length === 0) return;
+  try {
+    await fetch('/api/runtime/catalog/discounts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        items: products.map((p) => ({
+          productId: p.id,
+          mrp: p.mrp,
+          sellingPrice: p.sellingPrice,
+          discountPercent: p.discountPercent,
+        })),
+      }),
+    });
+  } catch {
+    // ignore offline sync failures
+  }
+}
+
+export async function syncStaticReviewToServer(
+  token: string,
+  customerEmail: string,
+  review: Review
+): Promise<void> {
+  try {
+    await fetch('/api/runtime/reviews', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        id: review.id,
+        productId: review.productId,
+        customerEmail,
+        authorName: review.authorName,
+        rating: review.rating,
+        title: review.title,
+        comment: review.comment,
+        isVerifiedPurchase: review.isVerifiedPurchase,
+        createdAt: review.createdAt,
+      }),
+    });
+  } catch {
+    // ignore offline sync failures
+  }
+}
+
+export function applyRuntimeCatalogSync(payload: {
+  productDiscounts?: Record<string, { mrp: number; sellingPrice: number; discountPercent: number }>;
+  reviews?: Review[];
+}): void {
+  const dbState = loadStaticDb();
+  let changed = false;
+
+  if (payload.productDiscounts && typeof payload.productDiscounts === 'object') {
+    dbState.products = dbState.products.map((p) => {
+      const ov = payload.productDiscounts?.[String(p.id)];
+      if (!ov) return p;
+      const safeMrp = Math.max(1, ov.mrp || p.mrp);
+      const safePrice = Math.min(safeMrp, Math.max(1, ov.sellingPrice || p.sellingPrice));
+      const safePct = Math.max(0, Math.min(95, Math.round(ov.discountPercent ?? p.discountPercent)));
+      if (p.mrp !== safeMrp || p.sellingPrice !== safePrice || p.discountPercent !== safePct) {
+        changed = true;
+      }
+      return {
+        ...p,
+        mrp: safeMrp,
+        sellingPrice: safePrice,
+        discountPercent: safePct,
+      };
+    });
+  }
+
+  if (Array.isArray(payload.reviews) && payload.reviews.length > 0) {
+    const existingIds = new Set(dbState.reviews.map((r) => r.id));
+    for (const rv of payload.reviews) {
+      if (!existingIds.has(rv.id)) {
+        dbState.reviews.unshift(rv);
+        existingIds.add(rv.id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      const statsMap = new Map<number, { count: number; sum: number }>();
+      for (const r of dbState.reviews) {
+        const cur = statsMap.get(r.productId) || { count: 0, sum: 0 };
+        cur.count += 1;
+        cur.sum += r.rating;
+        statsMap.set(r.productId, cur);
+      }
+      dbState.products = dbState.products.map((p) => {
+        const st = statsMap.get(p.id);
+        return {
+          ...p,
+          ratingCount: st ? st.count : 0,
+          ratingAvg: st && st.count > 0 ? (st.sum / st.count).toFixed(1) : '0.0',
+        };
+      });
+    }
+  }
+
+  if (changed) {
+    saveStaticDb(dbState);
   }
 }
 
@@ -2194,18 +2299,34 @@ export function submitStaticReview(
 ) {
   const dbState = loadStaticDb();
   const customer = getCustomerByToken(token);
+  if (!customer) {
+    throw new Error('Only signed-in customers can post a review. Please sign in first.');
+  }
   const prod = dbState.products.find((p) => p.id === productId);
   if (!prod) throw new Error('Product not found.');
+
+  const safeTitle = payload.title.trim();
+  const safeComment = payload.comment.trim();
+  if (safeTitle.length < 3 || safeComment.length < 5) {
+    throw new Error('Please enter a valid review headline and comment.');
+  }
+
+  const hasDeliveredOrder = dbState.orders.some(
+    (o) =>
+      dbState.orderUserMap[o.id] === customer.id &&
+      o.status === 'Delivered' &&
+      o.items?.some((it) => it.productId === productId)
+  );
 
   const review: Review = {
     id: Date.now(),
     productId,
-    userId: customer?.id || 0,
-    authorName: customer?.name || 'Verified Customer',
-    rating: payload.rating,
-    title: payload.title,
-    comment: payload.comment,
-    isVerifiedPurchase: true,
+    userId: customer.id,
+    authorName: customer.name,
+    rating: Math.max(1, Math.min(5, Math.round(payload.rating))),
+    title: safeTitle,
+    comment: safeComment,
+    isVerifiedPurchase: hasDeliveredOrder,
     createdAt: new Date().toISOString(),
   };
   dbState.reviews.unshift(review);
@@ -2214,6 +2335,7 @@ export function submitStaticReview(
   prod.ratingAvg = avg;
   prod.ratingCount = prodReviews.length;
   saveStaticDb(dbState);
+  void syncStaticReviewToServer(token, customer.email, review);
   return { review, ratingAvg: avg, ratingCount: prodReviews.length };
 }
 
@@ -2307,7 +2429,8 @@ export function createStaticAdminProduct(payload: {
   categoryId: number;
   description: string;
   mrp: number;
-  sellingPrice: number;
+  sellingPrice?: number;
+  discountPercent?: number;
   stock: number;
   gstPercent: number;
   imageUrls: string[];
@@ -2315,7 +2438,17 @@ export function createStaticAdminProduct(payload: {
   const dbState = loadStaticDb();
   const id = (dbState.products.reduce((m, p) => Math.max(m, p.id), 0) || 0) + 1;
   const slug = `${payload.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${id}`;
-  const discountPercent = Math.max(0, Math.round(((payload.mrp - payload.sellingPrice) / payload.mrp) * 100));
+  const sellingPrice = Math.min(
+    payload.mrp,
+    Math.max(
+      1,
+      payload.sellingPrice ?? Math.round(payload.mrp * (1 - (payload.discountPercent ?? 0) / 100))
+    )
+  );
+  const discountPercent =
+    payload.discountPercent !== undefined && payload.sellingPrice === undefined
+      ? Math.max(0, Math.min(95, Math.round(payload.discountPercent)))
+      : Math.max(0, Math.round(((payload.mrp - sellingPrice) / payload.mrp) * 100));
   const cat = dbState.categories.find((c) => c.id === payload.categoryId) || null;
   const product: Product = {
     id,
@@ -2328,14 +2461,14 @@ export function createStaticAdminProduct(payload: {
     subcategoryId: null,
     category: cat,
     mrp: payload.mrp,
-    sellingPrice: payload.sellingPrice,
+    sellingPrice,
     discountPercent,
     stock: payload.stock,
     lowStockThreshold: 5,
     gstPercent: payload.gstPercent,
     specifications: {},
     returnPolicy: '7 Days Easy Return & Replacement',
-    ratingAvg: '5.0',
+    ratingAvg: '0.0',
     ratingCount: 0,
     soldCount: 0,
     isFeatured: false,
@@ -2369,6 +2502,7 @@ export function updateStaticAdminProduct(
     description: string;
     mrp: number;
     sellingPrice: number;
+    discountPercent: number;
     stock: number;
     gstPercent: number;
     returnPolicy: string;
@@ -2386,8 +2520,21 @@ export function updateStaticAdminProduct(
   if (idx < 0) throw new Error('Product not found.');
   const current = dbState.products[idx];
   const mrp = patch.mrp ?? current.mrp;
-  const sellingPrice = patch.sellingPrice ?? current.sellingPrice;
-  const discountPercent = Math.max(0, Math.round(((mrp - sellingPrice) / mrp) * 100));
+  const sellingPrice = Math.min(
+    mrp,
+    Math.max(
+      1,
+      patch.sellingPrice !== undefined
+        ? patch.sellingPrice
+        : patch.discountPercent !== undefined
+        ? Math.round(mrp * (1 - patch.discountPercent / 100))
+        : current.sellingPrice
+    )
+  );
+  const discountPercent =
+    patch.discountPercent !== undefined && patch.sellingPrice === undefined
+      ? Math.max(0, Math.min(95, Math.round(patch.discountPercent)))
+      : Math.max(0, Math.round(((mrp - sellingPrice) / mrp) * 100));
   const category = patch.categoryId
     ? dbState.categories.find((c) => c.id === patch.categoryId) || current.category
     : current.category;
@@ -2412,7 +2559,38 @@ export function updateStaticAdminProduct(
   };
   dbState.products[idx] = updated;
   saveStaticDb(dbState);
+  void syncStaticDiscountsToServer('static_admin_token', [updated]);
   return { product: updated };
+}
+
+export function applyStaticBulkDiscount(payload: {
+  scope: 'all' | 'category';
+  categoryId?: number;
+  discountPercent: number;
+}): { updatedCount: number; discountPercent: number } {
+  const dbState = loadStaticDb();
+  const pct = Math.max(0, Math.min(95, Math.round(payload.discountPercent)));
+  let updatedCount = 0;
+  const touched: Product[] = [];
+
+  dbState.products = dbState.products.map((p) => {
+    if (payload.scope === 'category' && payload.categoryId && p.categoryId !== payload.categoryId) {
+      return p;
+    }
+    updatedCount += 1;
+    const nextPrice = pct === 0 ? p.mrp : Math.max(1, Math.round(p.mrp * (1 - pct / 100)));
+    const nextProd = {
+      ...p,
+      sellingPrice: nextPrice,
+      discountPercent: pct,
+    };
+    touched.push(nextProd);
+    return nextProd;
+  });
+
+  saveStaticDb(dbState);
+  void syncStaticDiscountsToServer('static_admin_token', touched);
+  return { updatedCount, discountPercent: pct };
 }
 
 export function getStaticAdminCategories() {

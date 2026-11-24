@@ -6,7 +6,7 @@ import { isJsonApiResponse, queryStaticProducts } from '../lib/static-store';
 import type { Product } from '../types';
 
 export const ShopPage: React.FC = () => {
-  const { route, categories, navigate } = useStore();
+  const { route, categories, navigate, backendUnavailable } = useStore();
   const [products, setProducts] = useState<Product[]>([]);
   const [brands, setBrands] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,7 +77,7 @@ export const ShopPage: React.FC = () => {
       setBrands(staticRes.brands);
     })();
     return () => controller.abort();
-  }, [urlQ, urlFlag, selectedCategory, selectedBrand, minPrice, maxPrice, minRating, minDiscount, inStockOnly, sort]);
+  }, [urlQ, urlFlag, selectedCategory, selectedBrand, minPrice, maxPrice, minRating, minDiscount, inStockOnly, sort, backendUnavailable]);
 
   const activeCategoryObj = categories.find((c) => c.slug === selectedCategory);
 
@@ -231,14 +231,14 @@ export const ShopPage: React.FC = () => {
   );
 
   return (
-    <main className="max-w-[1440px] mx-auto px-4 lg:px-8 py-8 space-y-6">
+    <main className="max-w-[1440px] w-full min-w-0 mx-auto px-4 lg:px-8 py-8 space-y-6">
       {/* Category / Search Banner */}
-      <div className="bg-[#0B1F3A] text-white rounded-2xl p-6 lg:p-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
+      <div className="bg-[#0B1F3A] text-white rounded-2xl p-5 sm:p-6 lg:p-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="min-w-0">
           <p className="text-xs text-[#FDBA74] font-semibold uppercase tracking-wider">
             AAGAMAN MART Catalog
           </p>
-          <h1 className="font-display text-2xl lg:text-3xl font-bold mt-1">
+          <h1 className="font-display text-2xl lg:text-3xl font-bold mt-1 break-words">
             {urlQ
               ? `Search results for "${urlQ}"`
               : activeCategoryObj
@@ -251,7 +251,7 @@ export const ShopPage: React.FC = () => {
             <p className="text-sm text-slate-300 mt-1 max-w-2xl">{activeCategoryObj.description}</p>
           )}
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
           <button
             type="button"
             onClick={() => setMobileFiltersOpen(true)}
@@ -276,12 +276,12 @@ export const ShopPage: React.FC = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Desktop Sidebar */}
-        <aside className="hidden lg:block lg:col-span-3 bg-white border border-slate-200 rounded-2xl p-5 sticky top-32">
+        <aside className="hidden lg:block lg:col-span-3 min-w-0 bg-white border border-slate-200 rounded-2xl p-5 sticky top-32">
           {filterPanel}
         </aside>
 
         {/* Results Grid */}
-        <section className="lg:col-span-9 space-y-4">
+        <section className="lg:col-span-9 min-w-0 space-y-4">
           <div className="flex items-center justify-between text-xs text-slate-600">
             <span className="tabular-nums">
               Showing <strong className="text-[#0B1F3A]">{products.length}</strong> products
@@ -321,7 +321,7 @@ export const ShopPage: React.FC = () => {
       {/* Mobile Filters Slide-over */}
       {mobileFiltersOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 flex justify-end">
-          <div className="w-80 bg-white h-full p-5 overflow-y-auto">
+          <div className="w-[min(20rem,88vw)] bg-white h-full p-5 overflow-y-auto">
             <div className="flex justify-end mb-2">
               <button type="button" onClick={() => setMobileFiltersOpen(false)} className="p-1">
                 <X className="w-5 h-5" />

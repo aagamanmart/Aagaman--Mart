@@ -77,9 +77,9 @@ const AppRouter: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-slate-900">
+    <div className="min-h-screen w-full max-w-full overflow-x-clip flex flex-col bg-[#F8FAFC] text-slate-900">
       <Navbar />
-      <div className="flex-1">{page}</div>
+      <div className="flex-1 min-w-0 w-full">{page}</div>
       <Footer />
       <CartDrawer />
       <AuthModal />

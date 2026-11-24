@@ -3,6 +3,7 @@ import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from '../lib/firebase';
 import { fetchFirestoreStoreConfig, syncGoogleCustomerToFirestore } from '../lib/firestore-sync';
 import {
+  applyRuntimeCatalogSync,
   clearSavedStaticCustomerSession,
   getSavedStaticCustomerSession,
   getStaticCategories,
@@ -206,15 +207,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // ignore Firestore config errors when offline
     }
     try {
-      const runtimeRes = await fetch('/api/runtime/config');
+      const [runtimeRes, catalogRes] = await Promise.all([
+        fetch('/api/runtime/config'),
+        fetch('/api/runtime/catalog'),
+      ]);
       if (isJsonApiResponse(runtimeRes)) {
         const runtimeJson = await runtimeRes.json();
         if (runtimeJson.config && typeof runtimeJson.config === 'object') {
           resolvedConfig = { ...resolvedConfig, ...runtimeJson.config };
         }
       }
+      if (isJsonApiResponse(catalogRes)) {
+        const catalogJson = await catalogRes.json();
+        applyRuntimeCatalogSync({
+          productDiscounts: catalogJson.productDiscounts,
+          reviews: catalogJson.reviews,
+        });
+      }
     } catch {
-      // ignore runtime config fetch errors
+      // ignore runtime config/catalog fetch errors
     }
 
     setConfig(resolvedConfig);

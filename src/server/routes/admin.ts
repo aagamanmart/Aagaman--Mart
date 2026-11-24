@@ -240,7 +240,8 @@ adminRouter.post('/admin/products', requireAdmin, async (req, res) => {
     subcategoryId: z.number().int().positive().nullable().optional(),
     description: z.string().min(5),
     mrp: z.number().int().positive(),
-    sellingPrice: z.number().int().positive(),
+    sellingPrice: z.number().int().positive().optional(),
+    discountPercent: z.number().min(0).max(95).optional(),
     stock: z.number().int().min(0),
     gstPercent: z.number().int().min(0).max(28).default(18),
     returnPolicy: z.string().default('7 Days Easy Return & Replacement'),
@@ -270,17 +271,20 @@ adminRouter.post('/admin/products', requireAdmin, async (req, res) => {
   if (parsed.data.imageUrls.some((url) => !isSafeImageUrl(url))) {
     return res.status(400).json({ error: 'All product image URLs must use https://, http://, or /src/assets/ paths.' });
   }
-  if (parsed.data.sellingPrice > parsed.data.mrp) {
+  const computedPrice =
+    parsed.data.sellingPrice ??
+    Math.max(1, Math.round(parsed.data.mrp * (1 - (parsed.data.discountPercent ?? 0) / 100)));
+  if (computedPrice > parsed.data.mrp) {
     return res.status(400).json({ error: 'Selling price cannot exceed MRP.' });
   }
 
   try {
     const slugBase = parsed.data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const slug = `${slugBase}-${crypto.randomBytes(2).toString('hex')}`;
-    const discountPercent = Math.max(
-      0,
-      Math.round(((parsed.data.mrp - parsed.data.sellingPrice) / parsed.data.mrp) * 100)
-    );
+    const discountPercent =
+      parsed.data.discountPercent !== undefined && parsed.data.sellingPrice === undefined
+        ? Math.round(parsed.data.discountPercent)
+        : Math.max(0, Math.round(((parsed.data.mrp - computedPrice) / parsed.data.mrp) * 100));
 
     const [created] = await db
       .insert(products)
@@ -293,7 +297,7 @@ adminRouter.post('/admin/products', requireAdmin, async (req, res) => {
         subcategoryId: parsed.data.subcategoryId ?? null,
         description: parsed.data.description,
         mrp: parsed.data.mrp,
-        sellingPrice: parsed.data.sellingPrice,
+        sellingPrice: computedPrice,
         discountPercent,
         stock: parsed.data.stock,
         gstPercent: parsed.data.gstPercent,
@@ -337,6 +341,7 @@ adminRouter.put('/admin/products/:id', requireAdmin, async (req, res) => {
     categoryId: z.number().int().positive().optional(),
     mrp: z.number().int().positive().optional(),
     sellingPrice: z.number().int().positive().optional(),
+    discountPercent: z.number().min(0).max(95).optional(),
     stock: z.number().int().min(0).optional(),
     gstPercent: z.number().int().min(0).max(28).optional(),
     returnPolicy: z.string().trim().min(2).optional(),
@@ -361,13 +366,21 @@ adminRouter.put('/admin/products/:id', requireAdmin, async (req, res) => {
   const existing = await db.select().from(products).where(eq(products.id, id)).limit(1);
   if (!existing[0]) return res.status(404).json({ error: 'Product not found.' });
 
-  const { imageUrls, sku, ...productFields } = parsed.data;
+  const { imageUrls, sku, discountPercent: explicitDiscount, ...productFields } = parsed.data;
   const nextMrp = productFields.mrp ?? existing[0].mrp;
-  const nextPrice = productFields.sellingPrice ?? existing[0].sellingPrice;
+  const nextPrice =
+    productFields.sellingPrice !== undefined
+      ? productFields.sellingPrice
+      : explicitDiscount !== undefined
+      ? Math.max(1, Math.round(nextMrp * (1 - explicitDiscount / 100)))
+      : existing[0].sellingPrice;
   if (nextPrice > nextMrp) {
     return res.status(400).json({ error: 'Selling price cannot exceed MRP.' });
   }
-  const discountPercent = Math.max(0, Math.round(((nextMrp - nextPrice) / nextMrp) * 100));
+  const discountPercent =
+    explicitDiscount !== undefined && productFields.sellingPrice === undefined
+      ? Math.round(explicitDiscount)
+      : Math.max(0, Math.round(((nextMrp - nextPrice) / nextMrp) * 100));
 
   try {
     const result = await db.transaction(async (tx) => {
@@ -375,6 +388,8 @@ adminRouter.put('/admin/products/:id', requireAdmin, async (req, res) => {
         .update(products)
         .set({
           ...productFields,
+          mrp: nextMrp,
+          sellingPrice: nextPrice,
           ...(sku ? { sku: sku.toUpperCase() } : {}),
           discountPercent,
         })
@@ -407,6 +422,47 @@ adminRouter.put('/admin/products/:id', requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Update product error:', error);
     res.status(500).json({ error: 'Failed to update product (SKU may already exist).' });
+  }
+});
+
+adminRouter.post('/admin/products/bulk-discount', requireAdmin, async (req, res) => {
+  const schema = z.object({
+    scope: z.enum(['all', 'category']).default('all'),
+    categoryId: z.number().int().positive().optional(),
+    discountPercent: z.number().min(0).max(95),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid discount input.' });
+  }
+  if (parsed.data.scope === 'category' && !parsed.data.categoryId) {
+    return res.status(400).json({ error: 'Please select a category.' });
+  }
+
+  const pct = Math.round(parsed.data.discountPercent);
+  try {
+    const rows =
+      parsed.data.scope === 'category' && parsed.data.categoryId
+        ? await db.select().from(products).where(eq(products.categoryId, parsed.data.categoryId))
+        : await db.select().from(products);
+
+    await db.transaction(async (tx) => {
+      for (const row of rows) {
+        const nextPrice = pct === 0 ? row.mrp : Math.max(1, Math.round(row.mrp * (1 - pct / 100)));
+        await tx
+          .update(products)
+          .set({
+            sellingPrice: nextPrice,
+            discountPercent: pct,
+          })
+          .where(eq(products.id, row.id));
+      }
+    });
+
+    res.json({ ok: true, updatedCount: rows.length, discountPercent: pct });
+  } catch (error) {
+    console.error('Bulk discount error:', error);
+    res.status(500).json({ error: 'Failed to apply discount across products.' });
   }
 });
 

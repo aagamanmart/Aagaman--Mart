@@ -1,4 +1,4 @@
-import { count } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import { db } from './index.ts';
 import {
   categories,
@@ -42,6 +42,30 @@ export async function ensureSeeded(): Promise<void> {
 async function runSeed(): Promise<void> {
   const existing = await db.select({ total: count() }).from(categories);
   if ((existing[0]?.total ?? 0) > 0) {
+    // Clean up legacy fake seeded reviews/ratings once so only real user reviews display
+    const dummyReviewer = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.uid, 'seed-verified-shopper-01'))
+      .limit(1);
+    if (dummyReviewer[0]) {
+      await db.delete(reviews).where(eq(reviews.userId, dummyReviewer[0].id));
+      await db.delete(users).where(eq(users.id, dummyReviewer[0].id));
+      const allProds = await db.select({ id: products.id }).from(products);
+      const allRevs = await db.select({ productId: reviews.productId, rating: reviews.rating }).from(reviews);
+      const byProd = new Map<number, number[]>();
+      for (const r of allRevs) {
+        const list = byProd.get(r.productId) || [];
+        list.push(r.rating);
+        byProd.set(r.productId, list);
+      }
+      for (const p of allProds) {
+        const list = byProd.get(p.id) || [];
+        const ratingCount = list.length;
+        const ratingAvg = ratingCount > 0 ? (list.reduce((s, v) => s + v, 0) / ratingCount).toFixed(1) : '0.0';
+        await db.update(products).set({ ratingCount, ratingAvg }).where(eq(products.id, p.id));
+      }
+    }
     return;
   }
 
@@ -210,18 +234,7 @@ async function runSeed(): Promise<void> {
     }
   }
 
-  // 2. Seed Reviewer Customer Profile (for realistic verified reviews)
-  const [reviewer] = await db
-    .insert(users)
-    .values({
-      uid: 'seed-verified-shopper-01',
-      email: 'arjun.mehta@example.in',
-      name: 'Arjun Mehta',
-      phone: '+91 98201 44210',
-      emailVerified: true,
-      phoneVerified: true,
-    })
-    .returning();
+  // 2. Seed Products (real 0-review state until signed-in shoppers publish reviews)
 
   // 3. Seed 17 Rich Indian E-Commerce Products across categories
   const productSeeds: Array<{
@@ -761,8 +774,8 @@ async function runSeed(): Promise<void> {
         gstPercent: p.gstPercent,
         specifications: p.specifications,
         returnPolicy: p.returnPolicy,
-        ratingAvg: p.ratingAvg,
-        ratingCount: p.ratingCount,
+        ratingAvg: '0.0',
+        ratingCount: 0,
         soldCount: p.soldCount,
         isFeatured: Boolean(p.isFeatured),
         isTrending: Boolean(p.isTrending),
@@ -793,32 +806,6 @@ async function runSeed(): Promise<void> {
         priceAdjustment: v.priceAdjustment,
         stock: v.stock,
       });
-    }
-
-    // Seed verified reviews for first 6 featured items
-    if (p.isFeatured) {
-      await db.insert(reviews).values([
-        {
-          productId: inserted.id,
-          userId: reviewer.id,
-          authorName: 'Arjun Mehta · Mumbai',
-          rating: 5,
-          title: 'Exceptional build quality and fast next-day delivery',
-          comment:
-            'Ordered on AAGAMAN MART with UPI and received genuine sealed packaging the very next afternoon. Matches every specification.',
-          isVerifiedPurchase: true,
-        },
-        {
-          productId: inserted.id,
-          userId: reviewer.id,
-          authorName: 'Priya Nair · Bengaluru',
-          rating: 5,
-          title: 'Worth every rupee during the Grand Aagaman Sale',
-          comment:
-            'Applied AAGAMAN10 at checkout for instant savings. Packaging was secure and GST invoice was ready immediately in My Orders.',
-          isVerifiedPurchase: true,
-        },
-      ]);
     }
   }
 
