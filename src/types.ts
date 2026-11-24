@@ -201,6 +201,26 @@ export interface BannerItem {
   imageUrl: string;
 }
 
+export interface PincodeDeliveryRule {
+  pincode: string;
+  cityLabel: string;
+  serviceable: boolean;
+  deliveryDays: number;
+  codAvailable: boolean;
+  courierPartner?: string;
+  note?: string;
+}
+
+export interface DeliveryScheduleConfig {
+  sameHubDays: number;
+  standardDays: number;
+  remoteDays: number;
+  expressDays: number;
+  codEnabled: boolean;
+  cutoffNote: string;
+  pincodeRules: PincodeDeliveryRule[];
+}
+
 export interface StoreConfig {
   siteName: string;
   tagline: string;
@@ -222,6 +242,7 @@ export interface StoreConfig {
     youtube?: string;
   };
   banners: BannerItem[];
+  deliveryConfig?: DeliveryScheduleConfig;
 }
 
 export interface PublicCoupon {

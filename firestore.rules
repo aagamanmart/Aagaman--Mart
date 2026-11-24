@@ -89,6 +89,65 @@ service cloud.firestore {
         && data.lastLoginAt is timestamp;
     }
 
+    function isValidPincodeRule(rule) {
+      return rule is map
+        && rule.keys().hasAll([
+          'pincode',
+          'cityLabel',
+          'serviceable',
+          'deliveryDays',
+          'codAvailable',
+          'courierPartner',
+          'note'
+        ])
+        && rule.keys().hasOnly([
+          'pincode',
+          'cityLabel',
+          'serviceable',
+          'deliveryDays',
+          'codAvailable',
+          'courierPartner',
+          'note'
+        ])
+        && rule.pincode is string && rule.pincode.size() >= 3 && rule.pincode.size() <= 6 && rule.pincode.matches('^[1-9][0-9]{2}([0-9]{3})?$')
+        && rule.cityLabel is string && rule.cityLabel.size() <= 120
+        && rule.serviceable is bool
+        && rule.deliveryDays is int && rule.deliveryDays >= 0 && rule.deliveryDays <= 30
+        && rule.codAvailable is bool
+        && rule.courierPartner is string && rule.courierPartner.size() <= 80
+        && rule.note is string && rule.note.size() <= 200;
+    }
+
+    function isValidDeliveryConfig(dc) {
+      return dc is map
+        && dc.keys().hasAll([
+          'sameHubDays',
+          'standardDays',
+          'remoteDays',
+          'expressDays',
+          'codEnabled',
+          'cutoffNote',
+          'pincodeRules'
+        ])
+        && dc.keys().hasOnly([
+          'sameHubDays',
+          'standardDays',
+          'remoteDays',
+          'expressDays',
+          'codEnabled',
+          'cutoffNote',
+          'pincodeRules'
+        ])
+        && dc.sameHubDays is int && dc.sameHubDays >= 0 && dc.sameHubDays <= 30
+        && dc.standardDays is int && dc.standardDays >= 0 && dc.standardDays <= 30
+        && dc.remoteDays is int && dc.remoteDays >= 0 && dc.remoteDays <= 30
+        && dc.expressDays is int && dc.expressDays >= 0 && dc.expressDays <= 15
+        && dc.codEnabled is bool
+        && dc.cutoffNote is string && dc.cutoffNote.size() <= 240
+        && dc.pincodeRules is list && dc.pincodeRules.size() <= 100
+        && (dc.pincodeRules.size() == 0 || isValidPincodeRule(dc.pincodeRules[0]));
+    }
+
     function isValidStoreConfig(data) {
       return data.keys().hasAll([
           'siteName',
@@ -122,6 +181,7 @@ service cloud.firestore {
           'flashSaleTitle',
           'flashSaleSubtitle',
           'banners',
+          'deliveryConfig',
           'updatedAt'
         ])
         && data.siteName is string && data.siteName.size() >= 1 && data.siteName.size() <= 120
@@ -139,6 +199,7 @@ service cloud.firestore {
         && data.flashSaleSubtitle is string && data.flashSaleSubtitle.size() <= 400
         && data.banners is list && data.banners.size() <= 10
         && (data.banners.size() == 0 || data.banners[0] is map)
+        && (!('deliveryConfig' in data) || isValidDeliveryConfig(data.deliveryConfig))
         && data.updatedAt is timestamp;
     }
 

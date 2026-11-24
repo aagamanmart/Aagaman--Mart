@@ -19,6 +19,7 @@ import {
   addStaticAddress,
   cancelStaticOrder,
   changeStaticCustomerPassword,
+  checkAuthenticPincode,
   deleteStaticAddress,
   getStaticCustomerMe,
   getStaticCustomerOrders,
@@ -46,6 +47,7 @@ export const AccountPage: React.FC = () => {
   const {
     user,
     authToken,
+    config,
     route,
     setIsAuthModalOpen,
     logoutCustomer,
@@ -90,6 +92,7 @@ export const AccountPage: React.FC = () => {
     addressType: 'Home' as 'Home' | 'Work' | 'Other',
     isDefault: true,
   });
+  const [addrPinFeedback, setAddrPinFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const loadAccountData = async () => {
     if (!authToken) return;
@@ -517,6 +520,12 @@ export const AccountPage: React.FC = () => {
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              const pinRes = await checkAuthenticPincode(newAddr.pincode, config, 'Standard Delivery', false);
+              if (!pinRes.serviceable) {
+                setAddrPinFeedback({ ok: false, msg: pinRes.error });
+                notify(pinRes.error, 'error');
+                return;
+              }
               if (isStaticToken(authToken)) {
                 addStaticAddress(authToken, { ...newAddr, line2: '', landmark: '' });
                 notify('Address added!', 'success');
@@ -530,6 +539,7 @@ export const AccountPage: React.FC = () => {
                   addressType: 'Home',
                   isDefault: true,
                 });
+                setAddrPinFeedback(null);
                 loadAccountData();
                 return;
               }
@@ -552,6 +562,7 @@ export const AccountPage: React.FC = () => {
                   addressType: 'Home',
                   isDefault: true,
                 });
+                setAddrPinFeedback(null);
                 loadAccountData();
               }
             }}
@@ -598,11 +609,36 @@ export const AccountPage: React.FC = () => {
             <input
               required
               maxLength={6}
-              placeholder="6-Digit Pincode"
+              placeholder="6-Digit Indian Pincode"
               value={newAddr.pincode}
-              onChange={(e) => setNewAddr({ ...newAddr, pincode: e.target.value.replace(/\D/g, '') })}
+              onChange={async (e) => {
+                const pin = e.target.value.replace(/\D/g, '').slice(0, 6);
+                setNewAddr((prev) => ({ ...prev, pincode: pin }));
+                setAddrPinFeedback(null);
+                if (/^[1-9][0-9]{5}$/.test(pin)) {
+                  const res = await checkAuthenticPincode(pin, config, 'Standard Delivery', false);
+                  if (res.serviceable) {
+                    setNewAddr((prev) => ({
+                      ...prev,
+                      city: prev.city || res.city,
+                      state: prev.state || res.state,
+                    }));
+                    setAddrPinFeedback({
+                      ok: true,
+                      msg: `${res.region} · Est. Delivery by ${res.estimatedDelivery}`,
+                    });
+                  } else {
+                    setAddrPinFeedback({ ok: false, msg: res.error });
+                  }
+                }
+              }}
               className="w-full h-9 px-3 rounded-lg border border-slate-300 text-xs font-mono"
             />
+            {addrPinFeedback && (
+              <p className={`text-[11px] ${addrPinFeedback.ok ? 'text-emerald-700' : 'text-red-600'}`}>
+                {addrPinFeedback.msg}
+              </p>
+            )}
             <button type="submit" className="w-full h-10 rounded-lg bg-[#EA580C] text-white text-xs font-semibold">
               Save Address
             </button>

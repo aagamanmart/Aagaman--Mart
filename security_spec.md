@@ -5,7 +5,7 @@
 2. PII fields (`email`, `phone`, `name`) on `/customers/{customerId}` can ONLY be read (`get`) by the owning user (`request.auth.uid == customerId`) or a verified admin (`isAdmin()`).
 3. Listing `/customers` is strictly restricted to verified admins (`isAdmin()`).
 4. Customers cannot escalate privileges, modify `uid`, `email`, `authMethod`, `createdAt`, or clear `isBlocked` on update. Only `isAdmin()` may modify `isBlocked`.
-5. `/storeConfig/main` is publicly readable via `get` for storefront rendering (`announcementText`, `headquarters`, `supportEmail`, `banners`) and writable only by `isAdmin()` with strict schema and bounded array (`banners.size() <= 10`) checks.
+5. `/storeConfig/main` is publicly readable via `get` for storefront rendering (`announcementText`, `headquarters`, `supportEmail`, `banners`, `deliveryConfig`) and writable only by `isAdmin()` with strict schema and bounded array (`banners.size() <= 10`, `deliveryConfig.pincodeRules.size() <= 100`) checks.
 6. Client-supplied timestamps and shadow fields are rejected across all collections via `request.time` enforcement and `keys().hasAll(...) && keys().hasOnly(...)`.
 
 ## 2. Adversarial Payloads Covered ("Dirty Dozen")

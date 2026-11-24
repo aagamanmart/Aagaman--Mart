@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   CheckCircle2,
   CreditCard,
+  Loader2,
   Lock,
   MapPin,
   ShieldCheck,
@@ -11,9 +13,11 @@ import {
 } from 'lucide-react';
 import { InvoiceModal } from '../components/InvoiceModal';
 import { formatINR, useStore } from '../context/StoreContext';
+import type { PincodeCheckResult } from '../lib/pincode';
 import {
   addStaticAddress,
   calculateStaticCheckout,
+  checkAuthenticPincode,
   createStaticOrder,
   failStaticRazorpayPayment,
   getStaticAddresses,
@@ -36,6 +40,7 @@ export const CheckoutPage: React.FC = () => {
   const {
     user,
     authToken,
+    config,
     cart,
     appliedCouponCode,
     setAppliedCouponCode,
@@ -96,6 +101,11 @@ export const CheckoutPage: React.FC = () => {
     method: string;
   } | null>(null);
   const [sandboxUpiId, setSandboxUpiId] = useState('customer@okaxis');
+
+  // Pincode verification & dynamic Admin ETA state
+  const [pincodeChecking, setPincodeChecking] = useState(false);
+  const [standardPinCheck, setStandardPinCheck] = useState<PincodeCheckResult | null>(null);
+  const [expressPinCheck, setExpressPinCheck] = useState<PincodeCheckResult | null>(null);
 
   // Confirmed Order
   const [confirmedOrder, setConfirmedOrder] = useState<OrderRecord | null>(null);
@@ -234,6 +244,40 @@ export const CheckoutPage: React.FC = () => {
     addrLandmark,
     addrType,
   ]);
+
+  useEffect(() => {
+    const pin = activeAddressPayload.pincode.trim();
+    if (!/^[1-9][0-9]{5}$/.test(pin)) {
+      setStandardPinCheck(null);
+      setExpressPinCheck(null);
+      setPincodeChecking(false);
+      return;
+    }
+    let cancelled = false;
+    setPincodeChecking(true);
+    Promise.all([
+      checkAuthenticPincode(pin, config, 'Standard Delivery', false),
+      checkAuthenticPincode(pin, config, 'Express Delivery', false),
+    ])
+      .then(([stdRes, expRes]) => {
+        if (cancelled) return;
+        setStandardPinCheck(stdRes);
+        setExpressPinCheck(expRes);
+        if (stdRes.serviceable && selectedAddressId === 'new') {
+          if (stdRes.city) setAddrCity((prev) => prev || stdRes.city);
+          if (stdRes.state) setAddrState((prev) => prev || stdRes.state);
+        }
+        if (stdRes.serviceable && !stdRes.codAvailable && paymentMethod === 'cod') {
+          setPaymentMethod('upi');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPincodeChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAddressPayload.pincode, config, selectedAddressId, paymentMethod]);
 
   const loadOrderConfirmation = async (orderNumber: string) => {
     clearLocalCartAfterOrder();
@@ -724,23 +768,29 @@ export const CheckoutPage: React.FC = () => {
                     placeholder="State *"
                     className="h-10 px-3 rounded-lg border border-slate-300 text-sm"
                   />
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={addrPincode}
-                    onChange={(e) => setAddrPincode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="6-Digit Pincode *"
-                    className="h-10 px-3 rounded-lg border border-slate-300 text-sm font-mono"
-                  />
-                  <select
-                    value={addrType}
-                    onChange={(e) => setAddrType(e.target.value as 'Home' | 'Work' | 'Other')}
-                    className="h-10 px-3 rounded-lg border border-slate-300 text-sm bg-white"
-                  >
-                    <option value="Home">Home</option>
-                    <option value="Work">Work</option>
-                    <option value="Other">Other</option>
-                  </select>
+                  <div className="sm:col-span-2 grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={addrPincode}
+                        onChange={(e) => setAddrPincode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="6-Digit Indian Pincode *"
+                        className="w-full h-10 px-3 rounded-lg border border-slate-300 text-sm font-mono"
+                      />
+                    </div>
+                    <select
+                      value={addrType}
+                      onChange={(e) => setAddrType(e.target.value as 'Home' | 'Work' | 'Other')}
+                      className="h-10 px-3 rounded-lg border border-slate-300 text-sm bg-white"
+                    >
+                      <option value="Home">Home</option>
+                      <option value="Work">Work</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+
                   <label className="sm:col-span-2 flex items-center gap-2 text-xs text-slate-700">
                     <input
                       type="checkbox"
@@ -750,6 +800,43 @@ export const CheckoutPage: React.FC = () => {
                     />
                     Save this address to my account
                   </label>
+                </div>
+              )}
+
+              {/* Live Indian Pincode Verification Banner */}
+              {activeAddressPayload.pincode.length === 6 && (
+                <div className="text-xs">
+                  {pincodeChecking ? (
+                    <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-600">
+                      <Loader2 className="w-4 h-4 animate-spin text-[#EA580C]" />
+                      <span>Verifying pincode {activeAddressPayload.pincode} with India Post...</span>
+                    </div>
+                  ) : standardPinCheck?.serviceable ? (
+                    <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-emerald-200 bg-emerald-50/70 text-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold">
+                          Verified: {standardPinCheck.region} · Est. Delivery by {standardPinCheck.estimatedDelivery}
+                        </p>
+                        <p className="text-[11px] text-emerald-700">
+                          {standardPinCheck.courierPartner} ·{' '}
+                          {standardPinCheck.codAvailable ? 'COD & Online Payment Available' : 'Prepaid Only'}
+                        </p>
+                      </div>
+                    </div>
+                  ) : standardPinCheck && !standardPinCheck.serviceable ? (
+                    <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-200 bg-red-50 text-red-700">
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                      <div>
+                        {standardPinCheck.noMatch && (
+                          <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold uppercase">
+                            No Match
+                          </span>
+                        )}
+                        <span>{standardPinCheck.error}</span>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -763,7 +850,8 @@ export const CheckoutPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
+                  disabled={pincodeChecking}
+                  onClick={async () => {
                     if (
                       !activeAddressPayload.line1 ||
                       !activeAddressPayload.city ||
@@ -773,11 +861,20 @@ export const CheckoutPage: React.FC = () => {
                       notify('Please enter a complete address and valid 6-digit Indian pincode.', 'error');
                       return;
                     }
+                    const checkRes =
+                      standardPinCheck && standardPinCheck.pincode === activeAddressPayload.pincode
+                        ? standardPinCheck
+                        : await checkAuthenticPincode(activeAddressPayload.pincode, config, 'Standard Delivery', false);
+                    setStandardPinCheck(checkRes);
+                    if (!checkRes.serviceable) {
+                      notify(checkRes.error || 'Delivery is unavailable for this pincode.', 'error');
+                      return;
+                    }
                     setStep(3);
                   }}
-                  className="px-6 h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm"
+                  className="px-6 h-11 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm disabled:opacity-60"
                 >
-                  Continue to Shipping
+                  {pincodeChecking ? 'Checking Pincode...' : 'Continue to Shipping'}
                 </button>
               </div>
             </div>
@@ -792,15 +889,34 @@ export const CheckoutPage: React.FC = () => {
                 {[
                   {
                     id: 'Standard Delivery' as const,
-                    title: 'Standard Tracked Delivery (Delhivery Express)',
-                    eta: '2–4 Business Days',
-                    fee: summary && summary.subtotal >= 999 ? 'FREE' : '₹49',
+                    title: `Standard Tracked Delivery (${
+                      standardPinCheck?.serviceable ? standardPinCheck.courierPartner : 'Delhivery Express'
+                    })`,
+                    eta: standardPinCheck?.serviceable
+                      ? `Estimated delivery by ${standardPinCheck.estimatedDelivery} (${
+                          standardPinCheck.estimatedDays === 0
+                            ? 'Same Day'
+                            : `${standardPinCheck.estimatedDays} day${standardPinCheck.estimatedDays > 1 ? 's' : ''}`
+                        })`
+                      : '2–4 Business Days',
+                    fee:
+                      summary && summary.subtotal >= (config?.freeShippingThreshold ?? 999)
+                        ? 'FREE'
+                        : `₹${config?.standardShippingCharge ?? 49}`,
                   },
                   {
                     id: 'Express Delivery' as const,
-                    title: 'Express Air Priority (BlueDart Air)',
-                    eta: 'Next Business Day across Metro Hubs',
-                    fee: '₹129',
+                    title: `Express Air Priority (${
+                      expressPinCheck?.serviceable ? expressPinCheck.courierPartner : 'BlueDart Air'
+                    })`,
+                    eta: expressPinCheck?.serviceable
+                      ? `Estimated delivery by ${expressPinCheck.estimatedDelivery} (${
+                          expressPinCheck.estimatedDays === 0
+                            ? 'Same Day'
+                            : `${expressPinCheck.estimatedDays} day${expressPinCheck.estimatedDays > 1 ? 's' : ''}`
+                        })`
+                      : 'Next Business Day across Metro Hubs',
+                    fee: `₹${config?.expressShippingCharge ?? 129}`,
                   },
                 ].map((opt) => (
                   <label
@@ -865,21 +981,33 @@ export const CheckoutPage: React.FC = () => {
                   { id: 'cod', label: 'Cash on Delivery (COD)', icon: Truck },
                 ].map((m) => {
                   const Icon = m.icon;
+                  const codBlocked =
+                    m.id === 'cod' && standardPinCheck?.serviceable === true && !standardPinCheck.codAvailable;
                   return (
                     <label
                       key={m.id}
-                      className={`p-3.5 rounded-xl border cursor-pointer flex items-center gap-3 ${
-                        paymentMethod === m.id ? 'border-[#EA580C] bg-orange-50/50' : 'border-slate-200'
+                      className={`p-3.5 rounded-xl border flex items-center gap-3 ${
+                        codBlocked
+                          ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
+                          : paymentMethod === m.id
+                          ? 'border-[#EA580C] bg-orange-50/50 cursor-pointer'
+                          : 'border-slate-200 cursor-pointer'
                       }`}
                     >
                       <input
                         type="radio"
+                        disabled={codBlocked}
                         checked={paymentMethod === m.id}
-                        onChange={() => setPaymentMethod(m.id as typeof paymentMethod)}
+                        onChange={() => !codBlocked && setPaymentMethod(m.id as typeof paymentMethod)}
                         className="accent-[#EA580C]"
                       />
                       <Icon className="w-4 h-4 text-[#0B1F3A]" />
-                      <span className="text-sm font-medium text-[#0B1F3A]">{m.label}</span>
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-[#0B1F3A]">{m.label}</span>
+                        {codBlocked && (
+                          <span className="text-[11px] text-red-600">Prepaid only for {activeAddressPayload.pincode}</span>
+                        )}
+                      </div>
                     </label>
                   );
                 })}

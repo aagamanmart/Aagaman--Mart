@@ -11,7 +11,8 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
-import type { Address, BannerItem, StoreConfig } from '../types';
+import { normalizeDeliveryConfig } from './pincode';
+import type { Address, BannerItem, DeliveryScheduleConfig, StoreConfig } from '../types';
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'utkarshjaiswar137@gmail.com';
 
@@ -218,6 +219,9 @@ export async function fetchFirestoreStoreConfig(): Promise<Partial<StoreConfig> 
       flashSaleTitle: String(data.flashSaleTitle || ''),
       flashSaleSubtitle: String(data.flashSaleSubtitle || ''),
       banners: Array.isArray(data.banners) ? (data.banners as BannerItem[]) : [],
+      deliveryConfig: data.deliveryConfig
+        ? normalizeDeliveryConfig(data.deliveryConfig as Partial<DeliveryScheduleConfig>)
+        : undefined,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
@@ -227,6 +231,7 @@ export async function fetchFirestoreStoreConfig(): Promise<Partial<StoreConfig> 
 export async function saveFirestoreStoreConfig(config: StoreConfig): Promise<void> {
   if (!isFirebaseBootstrappedAdmin()) return;
   const path = 'storeConfig/main';
+  const normalizedDelivery = normalizeDeliveryConfig(config.deliveryConfig);
   try {
     await setDoc(doc(db, 'storeConfig', 'main'), {
       siteName: clampStr(config.siteName || 'AAGAMAN MART', 120) || 'AAGAMAN MART',
@@ -243,6 +248,23 @@ export async function saveFirestoreStoreConfig(config: StoreConfig): Promise<voi
       flashSaleTitle: clampStr(config.flashSaleTitle, 160),
       flashSaleSubtitle: clampStr(config.flashSaleSubtitle, 400),
       banners: (config.banners || []).slice(0, 10),
+      deliveryConfig: {
+        sameHubDays: normalizedDelivery.sameHubDays,
+        standardDays: normalizedDelivery.standardDays,
+        remoteDays: normalizedDelivery.remoteDays,
+        expressDays: normalizedDelivery.expressDays,
+        codEnabled: normalizedDelivery.codEnabled,
+        cutoffNote: normalizedDelivery.cutoffNote,
+        pincodeRules: normalizedDelivery.pincodeRules.map((r) => ({
+          pincode: clampStr(r.pincode, 6),
+          cityLabel: clampStr(r.cityLabel, 120),
+          serviceable: Boolean(r.serviceable),
+          deliveryDays: Math.max(0, Math.min(30, Math.round(r.deliveryDays))),
+          codAvailable: Boolean(r.codAvailable),
+          courierPartner: clampStr(r.courierPartner, 80),
+          note: clampStr(r.note, 200),
+        })),
+      },
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

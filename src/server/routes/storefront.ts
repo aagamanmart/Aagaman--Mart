@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../../db/index.ts';
+import { db, isDbConfigured } from '../../db/index.ts';
 import {
   categories,
   coupons,
@@ -15,7 +15,14 @@ import {
   supportTickets,
 } from '../../db/schema.ts';
 import { ensureSeeded } from '../../db/seed.ts';
+import {
+  isValidIndianPincodeFormat,
+  lookupIndiaPostPincode,
+  resolvePincodeDelivery,
+} from '../../lib/pincode.ts';
 import { optionalAuth, type AuthRequest } from '../../middleware/auth.ts';
+import type { DeliveryScheduleConfig } from '../../types.ts';
+import { getRuntimeStoreConfig } from './runtime.ts';
 
 export const storefrontRouter = Router();
 
@@ -299,44 +306,49 @@ storefrontRouter.get('/products/:slug', async (req, res) => {
   }
 });
 
-storefrontRouter.get('/pincode/:code', (req, res) => {
+storefrontRouter.get('/pincode/:code', async (req, res) => {
   const code = (req.params.code || '').trim();
-  if (!/^[1-9][0-9]{5}$/.test(code)) {
+  if (!isValidIndianPincodeFormat(code)) {
     return res.status(400).json({
       serviceable: false,
+      noMatch: false,
+      pincode: code,
       error: 'Please enter a valid 6-digit Indian pincode.',
     });
   }
 
-  const firstDigit = code[0];
-  const zoneMap: Record<string, { region: string; days: number; courier: string }> = {
-    '1': { region: 'Delhi NCR & North India', days: 2, courier: 'Delhivery Express' },
-    '2': { region: 'Uttar Pradesh & Uttarakhand', days: 3, courier: 'BlueDart Air' },
-    '3': { region: 'Gujarat & Rajasthan', days: 2, courier: 'Delhivery Express' },
-    '4': { region: 'Maharashtra, Mumbai & Goa', days: 1, courier: 'Aagaman Prime Hub' },
-    '5': { region: 'Bengaluru, Hyderabad & Telangana', days: 2, courier: 'BlueDart Air' },
-    '6': { region: 'Chennai, Kerala & Tamil Nadu', days: 2, courier: 'XpressBees Priority' },
-    '7': { region: 'Kolkata, Odisha & East India', days: 3, courier: 'Delhivery Surface' },
-    '8': { region: 'Bihar & Jharkhand', days: 4, courier: 'Delhivery Surface' },
-    '9': { region: 'Army Postal & Special Zone', days: 5, courier: 'India Post Speed' },
-  };
+  let deliveryConfig: Partial<DeliveryScheduleConfig> | null = null;
+  try {
+    if (isDbConfigured) {
+      const settingsRows = await db
+        .select()
+        .from(siteSettings)
+        .where(eq(siteSettings.key, 'store_config'))
+        .limit(1);
+      const val = (settingsRows[0]?.value || {}) as Record<string, unknown>;
+      if (val.deliveryConfig && typeof val.deliveryConfig === 'object') {
+        deliveryConfig = val.deliveryConfig as Partial<DeliveryScheduleConfig>;
+      }
+    } else {
+      const rt = getRuntimeStoreConfig();
+      if (rt && rt.deliveryConfig && typeof rt.deliveryConfig === 'object') {
+        deliveryConfig = rt.deliveryConfig as Partial<DeliveryScheduleConfig>;
+      }
+    }
+  } catch {
+    // Use default delivery config if settings lookup fails
+  }
 
-  const zone = zoneMap[firstDigit] || { region: 'Pan India', days: 3, courier: 'Delhivery Express' };
-  const deliveryDate = new Date(Date.now() + zone.days * 86400000).toLocaleDateString('en-IN', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-  });
+  const shippingMethod =
+    req.query.method === 'express' ? 'Express Delivery' : 'Standard Delivery';
+  const lookup = await lookupIndiaPostPincode(code);
+  const result = resolvePincodeDelivery(code, lookup, deliveryConfig, shippingMethod, false);
 
-  res.json({
-    serviceable: true,
-    pincode: code,
-    region: zone.region,
-    courierPartner: zone.courier,
-    estimatedDays: zone.days,
-    estimatedDelivery: deliveryDate,
-    codAvailable: firstDigit !== '9',
-  });
+  if (!result.serviceable) {
+    return res.status(result.noMatch ? 404 : 400).json(result);
+  }
+
+  return res.json(result);
 });
 
 storefrontRouter.post('/newsletter', async (req, res) => {

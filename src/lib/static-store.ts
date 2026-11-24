@@ -1,4 +1,13 @@
 import { syncGoogleCustomerToFirestore } from './firestore-sync';
+import {
+  DEFAULT_DELIVERY_CONFIG,
+  findMatchingPincodeRule,
+  formatEstimatedDeliveryDate,
+  lookupIndiaPostPincode,
+  normalizeDeliveryConfig,
+  resolvePincodeDelivery,
+  type PincodeCheckResult,
+} from './pincode';
 import type {
   Address,
   Category,
@@ -1023,6 +1032,7 @@ function createInitialStaticDb(): StaticDatabase {
         imageUrl: IMG.heroHome,
       },
     ],
+    deliveryConfig: { ...DEFAULT_DELIVERY_CONFIG },
   };
 
   return {
@@ -1047,6 +1057,9 @@ function loadStaticDb(): StaticDatabase {
     if (raw) {
       const parsed = JSON.parse(raw) as StaticDatabase;
       if (parsed && Array.isArray(parsed.categories) && Array.isArray(parsed.products)) {
+        if (parsed.config) {
+          parsed.config.deliveryConfig = normalizeDeliveryConfig(parsed.config.deliveryConfig);
+        }
         return parsed;
       }
     }
@@ -1251,6 +1264,33 @@ export function getStaticProductBySlug(slug: string): {
   };
 }
 
+export async function checkAuthenticPincode(
+  rawCode: string,
+  configOverride?: StoreConfig | null,
+  shippingMethod: 'Standard Delivery' | 'Express Delivery' = 'Standard Delivery',
+  includeYear = false
+): Promise<PincodeCheckResult> {
+  const code = rawCode.trim();
+  const deliveryConfig = normalizeDeliveryConfig(
+    configOverride?.deliveryConfig || loadStaticDb().config?.deliveryConfig
+  );
+
+  // Try Express server /api/pincode first (works when backend is running)
+  try {
+    const methodParam = shippingMethod === 'Express Delivery' ? 'express' : 'standard';
+    const res = await fetch(`/api/pincode/${encodeURIComponent(code)}?method=${methodParam}`);
+    if (hasJsonContentType(res) && res.status < 500) {
+      const json = (await res.json()) as PincodeCheckResult;
+      return json;
+    }
+  } catch {
+    // Static deployment (GitHub Pages) or offline — verify directly with India Post API
+  }
+
+  const lookup = await lookupIndiaPostPincode(code);
+  return resolvePincodeDelivery(code, lookup, deliveryConfig, shippingMethod, includeYear);
+}
+
 export function checkStaticPincode(rawCode: string):
   | {
       serviceable: true;
@@ -1266,32 +1306,20 @@ export function checkStaticPincode(rawCode: string):
   if (!/^[1-9][0-9]{5}$/.test(code)) {
     return { serviceable: false, error: 'Please enter a valid 6-digit Indian pincode.' };
   }
-  const firstDigit = code[0];
-  const zoneMap: Record<string, { region: string; days: number; courier: string }> = {
-    '1': { region: 'Delhi NCR & North India', days: 2, courier: 'Delhivery Express' },
-    '2': { region: 'Uttar Pradesh & Uttarakhand', days: 3, courier: 'BlueDart Air' },
-    '3': { region: 'Gujarat & Rajasthan', days: 2, courier: 'Delhivery Express' },
-    '4': { region: 'Maharashtra, Mumbai & Goa', days: 1, courier: 'Aagaman Prime Hub' },
-    '5': { region: 'Bengaluru, Hyderabad & Telangana', days: 2, courier: 'BlueDart Air' },
-    '6': { region: 'Chennai, Kerala & Tamil Nadu', days: 2, courier: 'XpressBees Priority' },
-    '7': { region: 'Kolkata, Odisha & East India', days: 3, courier: 'Delhivery Surface' },
-    '8': { region: 'Bihar & Jharkhand', days: 4, courier: 'Delhivery Surface' },
-    '9': { region: 'Army Postal & Special Zone', days: 5, courier: 'India Post Speed' },
-  };
-  const zone = zoneMap[firstDigit] || { region: 'Pan India', days: 3, courier: 'Delhivery Express' };
-  const deliveryDate = new Date(Date.now() + zone.days * 86400000).toLocaleDateString('en-IN', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-  });
+  const deliveryConfig = normalizeDeliveryConfig(loadStaticDb().config?.deliveryConfig);
+  const rule = findMatchingPincodeRule(code, deliveryConfig);
+  if (rule && !rule.serviceable) {
+    return { serviceable: false, error: rule.note || 'Delivery is currently unavailable for this pincode.' };
+  }
+  const days = rule ? rule.deliveryDays : deliveryConfig.standardDays;
   return {
     serviceable: true,
     pincode: code,
-    region: zone.region,
-    courierPartner: zone.courier,
-    estimatedDays: zone.days,
-    estimatedDelivery: deliveryDate,
-    codAvailable: firstDigit !== '9',
+    region: rule?.cityLabel || 'Pan India',
+    courierPartner: rule?.courierPartner || 'Delhivery Express',
+    estimatedDays: days,
+    estimatedDelivery: formatEstimatedDeliveryDate(days, false),
+    codAvailable: rule ? deliveryConfig.codEnabled && rule.codAvailable : deliveryConfig.codEnabled,
   };
 }
 
@@ -1914,13 +1942,16 @@ export function createStaticOrder(
   const orderId = (dbState.orders.reduce((m, o) => Math.max(m, o.id), 0) || 100) + 1;
   const orderNumber = `AGM-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 899999)}`;
   const trackingNumber = `TRK${Math.floor(10000000 + Math.random() * 89999999)}IN`;
-  const estDays = payload.shippingMethod === 'Express Delivery' ? 1 : 3;
-  const estDelivery = new Date(Date.now() + estDays * 86400000).toLocaleDateString('en-IN', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
+  const deliveryCfg = normalizeDeliveryConfig(dbState.config?.deliveryConfig);
+  const pinRule = findMatchingPincodeRule(payload.address.pincode, deliveryCfg);
+  const estDays = pinRule
+    ? payload.shippingMethod === 'Express Delivery'
+      ? Math.min(pinRule.deliveryDays, deliveryCfg.expressDays)
+      : pinRule.deliveryDays
+    : payload.shippingMethod === 'Express Delivery'
+    ? deliveryCfg.expressDays
+    : deliveryCfg.standardDays;
+  const estDelivery = formatEstimatedDeliveryDate(estDays, true);
   const razorpayOrderId = isCod ? null : `order_rzp_sandbox_${Date.now().toString(36)}`;
 
   if (isCod) {
@@ -2555,9 +2586,13 @@ export function getStaticAdminSettings(): StoreConfig {
 
 export function updateStaticAdminSettings(config: StoreConfig, adminToken = 'static_admin_token'): Promise<void> {
   const dbState = loadStaticDb();
-  dbState.config = config;
+  const normalized: StoreConfig = {
+    ...config,
+    deliveryConfig: normalizeDeliveryConfig(config.deliveryConfig),
+  };
+  dbState.config = normalized;
   saveStaticDb(dbState);
-  return syncStaticConfigToServer(adminToken, config);
+  return syncStaticConfigToServer(adminToken, normalized);
 }
 
 export function getStaticAdminTickets(): StaticTicketRecord[] {

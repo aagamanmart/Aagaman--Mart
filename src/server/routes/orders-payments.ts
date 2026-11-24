@@ -20,8 +20,13 @@ import {
   shipping,
   siteSettings,
 } from '../../db/schema.ts';
+import {
+  lookupIndiaPostPincode,
+  resolvePincodeDelivery,
+} from '../../lib/pincode.ts';
 import { createRateLimiter } from '../../lib/security.ts';
 import { requireAuth, type AuthRequest } from '../../middleware/auth.ts';
+import type { DeliveryScheduleConfig } from '../../types.ts';
 
 export const ordersPaymentsRouter = Router();
 const checkoutLimiter = createRateLimiter(60_000, 15);
@@ -52,6 +57,9 @@ async function getStoreConfigNumbers() {
     freeShippingThreshold: Number(val.freeShippingThreshold) || 999,
     standardShippingCharge: Number(val.standardShippingCharge) || 49,
     expressShippingCharge: Number(val.expressShippingCharge) || 129,
+    deliveryConfig: (val.deliveryConfig && typeof val.deliveryConfig === 'object'
+      ? val.deliveryConfig
+      : null) as Partial<DeliveryScheduleConfig> | null,
   };
 }
 
@@ -213,6 +221,7 @@ async function computeCheckoutSummary(
     shippingCharge,
     grandTotal,
     freeShippingThreshold: cfg.freeShippingThreshold,
+    deliveryConfig: cfg.deliveryConfig,
   };
 }
 
@@ -317,16 +326,28 @@ ordersPaymentsRouter.post('/orders/create', requireAuth, checkoutLimiter, async 
       parsed.data.shippingMethod
     );
 
+    const lookup = await lookupIndiaPostPincode(parsed.data.address.pincode);
+    const pinResolution = resolvePincodeDelivery(
+      parsed.data.address.pincode,
+      lookup,
+      summary.deliveryConfig,
+      parsed.data.shippingMethod,
+      true
+    );
+    if (!pinResolution.serviceable) {
+      return res.status(400).json({ error: pinResolution.error });
+    }
+    if (parsed.data.paymentMethod === 'cod' && !pinResolution.codAvailable) {
+      return res.status(400).json({
+        error: `Cash on Delivery is not available for pincode ${parsed.data.address.pincode}. Please choose an online payment method.`,
+      });
+    }
+
     const isCod = parsed.data.paymentMethod === 'cod';
     const orderNumber = `AGM-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
     const trackingNumber = `TRK${crypto.randomInt(10000000, 99999999)}IN`;
-    const estDays = parsed.data.shippingMethod === 'Express Delivery' ? 1 : 3;
-    const estDelivery = new Date(Date.now() + estDays * 86400000).toLocaleDateString('en-IN', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
+    const estDelivery = pinResolution.estimatedDelivery;
+    const resolvedCourier = pinResolution.courierPartner;
 
     // If online payment, create Razorpay order (live API if configured, else signed sandbox order)
     let razorpayOrderId: string | null = null;
@@ -456,8 +477,7 @@ ordersPaymentsRouter.post('/orders/create', requireAuth, checkoutLimiter, async 
 
       await tx.insert(shipping).values({
         orderId: newOrder.id,
-        courierPartner:
-          parsed.data.shippingMethod === 'Express Delivery' ? 'BlueDart Air Priority' : 'Delhivery Express',
+        courierPartner: resolvedCourier,
         trackingNumber,
         status: isCod ? 'Order Received' : 'Awaiting Payment',
         estimatedDelivery: estDelivery,

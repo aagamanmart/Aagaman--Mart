@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
+  AlertCircle,
   ArrowRightLeft,
   CheckCircle2,
   Heart,
+  Loader2,
   MapPin,
   RotateCcw,
   Share2,
@@ -14,18 +16,20 @@ import {
 import { ProductCard } from '../components/ProductCard';
 import { formatINR, useStore } from '../context/StoreContext';
 import {
-  checkStaticPincode,
+  checkAuthenticPincode,
   getStaticProductBySlug,
   hasJsonContentType,
   isStaticToken,
   resolveAssetUrl,
   submitStaticReview,
 } from '../lib/static-store';
+import type { PincodeCheckResult } from '../lib/pincode';
 import type { Product, ProductVariant, Review } from '../types';
 
 export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
   const {
     navigate,
+    config,
     addToCart,
     wishlistIds,
     toggleWishlist,
@@ -47,13 +51,10 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
 
   // Pincode check
   const [pincode, setPincode] = useState('400051');
-  const [pincodeResult, setPincodeResult] = useState<{
-    region: string;
-    courierPartner: string;
-    estimatedDelivery: string;
-    codAvailable: boolean;
-  } | null>(null);
+  const [checkingPincode, setCheckingPincode] = useState(false);
+  const [pincodeResult, setPincodeResult] = useState<Extract<PincodeCheckResult, { serviceable: true }> | null>(null);
   const [pincodeErr, setPincodeErr] = useState('');
+  const [pincodeNoMatch, setPincodeNoMatch] = useState(false);
 
   // Review Form
   const [revRating, setRevRating] = useState(5);
@@ -102,27 +103,19 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
   const checkPincode = async (e: React.FormEvent) => {
     e.preventDefault();
     setPincodeErr('');
+    setPincodeNoMatch(false);
+    setCheckingPincode(true);
     try {
-      const res = await fetch(`/api/pincode/${encodeURIComponent(pincode.trim())}`);
-      if (hasJsonContentType(res) && res.status < 500) {
-        const json = await res.json();
-        if (!res.ok) {
-          setPincodeErr(json.error || 'Not serviceable');
-          setPincodeResult(null);
-        } else {
-          setPincodeResult(json);
-        }
-        return;
+      const result = await checkAuthenticPincode(pincode.trim(), config, 'Standard Delivery', false);
+      if (!result.serviceable) {
+        setPincodeErr(result.error);
+        setPincodeNoMatch(Boolean(result.noMatch));
+        setPincodeResult(null);
+      } else {
+        setPincodeResult(result);
       }
-    } catch {
-      // fall back to static pincode check
-    }
-    const localRes = checkStaticPincode(pincode.trim());
-    if (!localRes.serviceable) {
-      setPincodeErr(localRes.error);
-      setPincodeResult(null);
-    } else {
-      setPincodeResult(localRes);
+    } finally {
+      setCheckingPincode(false);
     }
   };
 
@@ -447,34 +440,62 @@ export const ProductDetailPage: React.FC<{ slug: string }> = ({ slug }) => {
           {/* Pincode Delivery Checker */}
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
             <p className="text-xs font-semibold text-[#0B1F3A] flex items-center gap-1.5">
-              <MapPin className="w-4 h-4 text-[#EA580C]" /> Check Delivery & COD Availability
+              <MapPin className="w-4 h-4 text-[#EA580C]" /> Check Indian Pincode Delivery &amp; COD
             </p>
             <form onSubmit={checkPincode} className="flex gap-2">
               <input
                 type="text"
+                inputMode="numeric"
                 maxLength={6}
                 value={pincode}
-                onChange={(e) => setPincode(e.target.value.replace(/\D/g, ''))}
-                placeholder="Enter 6-digit pincode"
+                onChange={(e) => {
+                  setPincode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                  setPincodeErr('');
+                  setPincodeNoMatch(false);
+                }}
+                placeholder="Enter 6-digit Indian pincode"
                 className="flex-1 h-9 px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#EA580C]"
               />
               <button
                 type="submit"
-                className="px-4 h-9 rounded-lg bg-[#0B1F3A] text-white text-xs font-semibold"
+                disabled={checkingPincode}
+                className="px-4 h-9 rounded-lg bg-[#0B1F3A] hover:bg-[#102A43] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-60"
               >
-                Check
+                {checkingPincode ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                <span>{checkingPincode ? 'Checking' : 'Check'}</span>
               </button>
             </form>
-            {pincodeErr && <p className="text-xs text-red-600">{pincodeErr}</p>}
+            {pincodeErr && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  {pincodeNoMatch && (
+                    <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold uppercase tracking-wide">
+                      No Match
+                    </span>
+                  )}
+                  <span>{pincodeErr}</span>
+                </div>
+              </div>
+            )}
             {pincodeResult && (
-              <div className="text-xs text-slate-700 space-y-0.5">
-                <p className="font-semibold text-emerald-700 flex items-center gap-1.5">
-                  <Truck className="w-3.5 h-3.5" /> Estimated delivery by {pincodeResult.estimatedDelivery}
+              <div className="text-xs text-slate-700 space-y-1 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2.5">
+                <p className="font-semibold text-emerald-800 flex items-center gap-1.5">
+                  <Truck className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                  <span>
+                    Estimated delivery by {pincodeResult.estimatedDelivery}{' '}
+                    <span className="font-normal text-emerald-700">
+                      ({pincodeResult.estimatedDays === 0 ? 'Same Day' : `${pincodeResult.estimatedDays} day${pincodeResult.estimatedDays > 1 ? 's' : ''}`})
+                    </span>
+                  </span>
                 </p>
-                <p className="text-slate-500">
-                  {pincodeResult.region} · {pincodeResult.courierPartner} ·{' '}
+                <p className="text-slate-600">
+                  <strong className="text-[#0B1F3A]">{pincodeResult.region}</strong> · {pincodeResult.courierPartner} ·{' '}
                   {pincodeResult.codAvailable ? 'Cash on Delivery Available' : 'Prepaid Only'}
                 </p>
+                {pincodeResult.cutoffNote && (
+                  <p className="text-[11px] text-slate-500">{pincodeResult.cutoffNote}</p>
+                )}
               </div>
             )}
           </div>

@@ -1,14 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   BarChart3,
+  CalendarClock,
   CheckCircle2,
   CreditCard,
   Eye,
   FolderTree,
   Image as ImageIcon,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Mail,
   MapPin,
@@ -25,6 +28,7 @@ import {
   Star,
   Tag,
   Trash2,
+  Truck,
   Upload,
   Users,
   X,
@@ -71,7 +75,14 @@ import {
   updateStaticAdminTicketStatus,
   verifyStaticAdminLogin,
 } from '../lib/static-store';
-import type { Address, BannerItem, OrderRecord, StoreConfig } from '../types';
+import {
+  formatEstimatedDeliveryDate,
+  lookupIndiaPostPincode,
+  normalizeDeliveryConfig,
+  resolvePincodeDelivery,
+  type PincodeCheckResult,
+} from '../lib/pincode';
+import type { Address, BannerItem, OrderRecord, PincodeDeliveryRule, StoreConfig } from '../types';
 
 const STUDIO_IMAGE_PRESETS: Array<{ label: string; url: string }> = [
   { label: 'Wireless Headphones', url: '/src/assets/images/prod_wireless_headphones_1795321793763.jpg' },
@@ -211,7 +222,7 @@ export const AdminPage: React.FC = () => {
 
   // Dashboard tabs
   const [tab, setTab] = useState<
-    'overview' | 'products' | 'categories' | 'orders' | 'customers' | 'payments' | 'marketing' | 'settings'
+    'overview' | 'products' | 'categories' | 'orders' | 'customers' | 'payments' | 'marketing' | 'delivery' | 'settings'
   >('overview');
 
   // Data states
@@ -288,6 +299,23 @@ export const AdminPage: React.FC = () => {
   >([]);
   const [settingsForm, setSettingsForm] = useState<StoreConfig>(() => getStaticAdminSettings());
   const [invoiceOrder, setInvoiceOrder] = useState<OrderRecord | null>(null);
+
+  // Delivery & Pincode Controls State
+  const [newPinRule, setNewPinRule] = useState<PincodeDeliveryRule>({
+    pincode: '',
+    cityLabel: '',
+    serviceable: true,
+    deliveryDays: 1,
+    codAvailable: true,
+    courierPartner: '',
+    note: '',
+  });
+  const [pinRuleVerifying, setPinRuleVerifying] = useState(false);
+  const [pinRuleVerifyMsg, setPinRuleVerifyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testPinInput, setTestPinInput] = useState('400051');
+  const [testPinLoading, setTestPinLoading] = useState(false);
+  const [testPinStdRes, setTestPinStdRes] = useState<PincodeCheckResult | null>(null);
+  const [testPinExpRes, setTestPinExpRes] = useState<PincodeCheckResult | null>(null);
 
   // Add Product Form
   const [showAddProduct, setShowAddProduct] = useState(false);
@@ -697,6 +725,36 @@ export const AdminPage: React.FC = () => {
 
   const maxChartRev = Math.max(1, ...(dashboard?.salesChart.map((d) => d.revenue) || [1]));
 
+  const deliveryCfg = normalizeDeliveryConfig(settingsForm.deliveryConfig);
+
+  const saveStoreConfigAcrossStores = async (nextConfig: StoreConfig, successMsg: string) => {
+    const normalizedConfig: StoreConfig = {
+      ...nextConfig,
+      deliveryConfig: normalizeDeliveryConfig(nextConfig.deliveryConfig),
+    };
+    setSettingsForm(normalizedConfig);
+    if (!adminToken) return;
+    if (isStaticToken(adminToken)) {
+      await updateStaticAdminSettings(normalizedConfig, adminToken);
+      await saveFirestoreStoreConfig(normalizedConfig).catch(() => {});
+      await refreshStoreMeta();
+      notify(successMsg, 'success');
+      return;
+    }
+    const res = await fetch('/api/admin/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ config: normalizedConfig }),
+    });
+    if (res.ok) {
+      await saveFirestoreStoreConfig(normalizedConfig).catch(() => {});
+      await refreshStoreMeta();
+      notify(successMsg, 'success');
+    } else {
+      notify('Failed to save store configuration.', 'error');
+    }
+  };
+
   const renderAnnouncementBarEditor = () => (
     <div className="lg:col-span-12 bg-white border border-slate-200 rounded-xl p-6 space-y-4 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
@@ -1093,6 +1151,7 @@ export const AdminPage: React.FC = () => {
             { id: 'customers', label: 'Customers', icon: Users },
             { id: 'payments', label: 'Payments Ledger', icon: CreditCard },
             { id: 'marketing', label: 'Coupons & Banners', icon: Tag },
+            { id: 'delivery', label: 'Delivery & Pincodes', icon: Truck },
             { id: 'settings', label: 'Settings & Support', icon: Settings },
           ].map((item) => {
             const Icon = item.icon;
@@ -2279,32 +2338,528 @@ export const AdminPage: React.FC = () => {
           </div>
         )}
 
+        {/* DELIVERY & PINCODES */}
+        {tab === 'delivery' && settingsForm && (
+          <div className="grid lg:grid-cols-12 gap-6 text-xs">
+            {/* Zone Delivery Schedule */}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                await saveStoreConfigAcrossStores(
+                  { ...settingsForm, deliveryConfig: deliveryCfg },
+                  'Delivery schedule & Indian pincode timing updated!'
+                );
+              }}
+              className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+                <div>
+                  <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                    <CalendarClock className="w-4 h-4 text-[#EA580C]" /> Pan-India Delivery Schedule (Delivery Kab Hoga)
+                  </h3>
+                  <p className="text-slate-500 mt-0.5">
+                    Set exact delivery days across India Post zones. Non-existent pincodes automatically show &ldquo;No Match&rdquo;.
+                  </p>
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 h-9 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold"
+                >
+                  Save Delivery Schedule
+                </button>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-1.5">
+                  <label className="block font-semibold text-[#0B1F3A]">Metro &amp; Tier-1 Cities (Days)</label>
+                  <p className="text-[11px] text-slate-500">Mumbai, Delhi NCR, Bengaluru, Hyderabad, Chennai, Pune, Kolkata</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={deliveryCfg.sameHubDays}
+                    onChange={(e) =>
+                      setSettingsForm({
+                        ...settingsForm,
+                        deliveryConfig: { ...deliveryCfg, sameHubDays: Math.max(0, Math.min(30, Number(e.target.value) || 0)) },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                  />
+                  <p className="text-[11px] font-medium text-emerald-700">
+                    Customer sees: {formatEstimatedDeliveryDate(deliveryCfg.sameHubDays, false)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-1.5">
+                  <label className="block font-semibold text-[#0B1F3A]">Standard Pan-India (Days)</label>
+                  <p className="text-[11px] text-slate-500">All other verified Indian districts &amp; towns</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={deliveryCfg.standardDays}
+                    onChange={(e) =>
+                      setSettingsForm({
+                        ...settingsForm,
+                        deliveryConfig: { ...deliveryCfg, standardDays: Math.max(0, Math.min(30, Number(e.target.value) || 0)) },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                  />
+                  <p className="text-[11px] font-medium text-emerald-700">
+                    Customer sees: {formatEstimatedDeliveryDate(deliveryCfg.standardDays, false)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-1.5">
+                  <label className="block font-semibold text-[#0B1F3A]">Remote / Hill / North-East &amp; J&amp;K (Days)</label>
+                  <p className="text-[11px] text-slate-500">NE States, J&amp;K, Ladakh, Islands, Himachal &amp; Uttarakhand hills</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={deliveryCfg.remoteDays}
+                    onChange={(e) =>
+                      setSettingsForm({
+                        ...settingsForm,
+                        deliveryConfig: { ...deliveryCfg, remoteDays: Math.max(0, Math.min(30, Number(e.target.value) || 0)) },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                  />
+                  <p className="text-[11px] font-medium text-emerald-700">
+                    Customer sees: {formatEstimatedDeliveryDate(deliveryCfg.remoteDays, false)}
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-1.5">
+                  <label className="block font-semibold text-[#0B1F3A]">Express Air Priority (Days)</label>
+                  <p className="text-[11px] text-slate-500">Paid fast air shipping option at checkout</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={15}
+                    value={deliveryCfg.expressDays}
+                    onChange={(e) =>
+                      setSettingsForm({
+                        ...settingsForm,
+                        deliveryConfig: { ...deliveryCfg, expressDays: Math.max(0, Math.min(15, Number(e.target.value) || 0)) },
+                      })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                  />
+                  <p className="text-[11px] font-medium text-emerald-700">
+                    Customer sees: {formatEstimatedDeliveryDate(deliveryCfg.expressDays, false)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4 pt-1">
+                <div>
+                  <label className="block font-semibold text-[#0B1F3A] mb-1">Dispatch Cutoff Note</label>
+                  <input
+                    value={deliveryCfg.cutoffNote}
+                    onChange={(e) =>
+                      setSettingsForm({
+                        ...settingsForm,
+                        deliveryConfig: { ...deliveryCfg, cutoffNote: e.target.value },
+                      })
+                    }
+                    placeholder="Orders placed before 4:00 PM dispatch the same day"
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between cursor-pointer font-semibold text-[#0B1F3A]">
+                    <span>Global Cash on Delivery (COD)</span>
+                    <input
+                      type="checkbox"
+                      checked={deliveryCfg.codEnabled}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          deliveryConfig: { ...deliveryCfg, codEnabled: e.target.checked },
+                        })
+                      }
+                      className="w-4 h-4 accent-[#EA580C]"
+                    />
+                  </label>
+                </div>
+              </div>
+            </form>
+
+            {/* Live Pincode Tester */}
+            <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+              <div>
+                <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-[#EA580C]" /> Live Indian Pincode Tester
+                </h3>
+                <p className="text-slate-500 mt-0.5">
+                  Test how customers see any 6-digit Indian pincode with your current rules (real India Post verification).
+                </p>
+              </div>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const pin = testPinInput.trim();
+                  setTestPinLoading(true);
+                  try {
+                    const lookup = await lookupIndiaPostPincode(pin);
+                    setTestPinStdRes(resolvePincodeDelivery(pin, lookup, deliveryCfg, 'Standard Delivery', false));
+                    setTestPinExpRes(resolvePincodeDelivery(pin, lookup, deliveryCfg, 'Express Delivery', false));
+                  } finally {
+                    setTestPinLoading(false);
+                  }
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={testPinInput}
+                  onChange={(e) => setTestPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Enter e.g. 400051 or 999999"
+                  className="flex-1 h-9 px-3 rounded-lg border border-slate-300 font-mono"
+                />
+                <button
+                  type="submit"
+                  disabled={testPinLoading}
+                  className="px-4 h-9 rounded-lg bg-[#0B1F3A] text-white font-semibold flex items-center gap-1.5"
+                >
+                  {testPinLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  <span>Test</span>
+                </button>
+              </form>
+
+              {testPinStdRes && (
+                !testPinStdRes.serviceable ? (
+                  <div className="p-3.5 rounded-xl border border-red-200 bg-red-50 text-red-700 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <AlertCircle className="w-4 h-4 text-red-600" />
+                      <span>{testPinStdRes.noMatch ? 'NO MATCH (Invalid Indian Pincode)' : 'Not Serviceable'}</span>
+                    </div>
+                    <p>{testPinStdRes.error}</p>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/70 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-[#0B1F3A]">
+                        {testPinStdRes.region} ({testPinStdRes.pincode})
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold uppercase">
+                        {testPinStdRes.zone}
+                      </span>
+                    </div>
+                    <div className="space-y-1 text-slate-700">
+                      <p>
+                        <strong>Standard Delivery:</strong> {testPinStdRes.estimatedDelivery} ({testPinStdRes.estimatedDays}d) · {testPinStdRes.courierPartner}
+                      </p>
+                      {testPinExpRes?.serviceable && (
+                        <p>
+                          <strong>Express Delivery:</strong> {testPinExpRes.estimatedDelivery} ({testPinExpRes.estimatedDays}d) · {testPinExpRes.courierPartner}
+                        </p>
+                      )}
+                      <p>
+                        <strong>COD:</strong> {testPinStdRes.codAvailable ? 'Available' : 'Prepaid Only'}
+                      </p>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+
+            {/* Pincode-Specific Delivery Overrides */}
+            <div className="lg:col-span-12 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+              <div className="border-b border-slate-200 pb-4">
+                <h3 className="font-display text-base font-bold text-[#0B1F3A] flex items-center gap-2">
+                  <Truck className="w-4 h-4 text-[#EA580C]" /> Pincode-Wise Custom Delivery Rules ({deliveryCfg.pincodeRules.length})
+                </h3>
+                <p className="text-slate-500 mt-0.5">
+                  Override delivery timing (&ldquo;delivery kab hoga&rdquo;), courier, COD, or block service for any specific 6-digit Indian pincode or 3-digit prefix (e.g. 400).
+                </p>
+              </div>
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const cleanPin = newPinRule.pincode.replace(/\D/g, '');
+                  if (!/^[1-9][0-9]{2}([0-9]{3})?$/.test(cleanPin)) {
+                    notify('Enter a valid 6-digit Indian pincode or 3-digit prefix (e.g. 400051 or 400).', 'error');
+                    return;
+                  }
+                  if (cleanPin.length === 6) {
+                    setPinRuleVerifying(true);
+                    const lookup = await lookupIndiaPostPincode(cleanPin);
+                    setPinRuleVerifying(false);
+                    if (!lookup.found && lookup.noMatch) {
+                      setPinRuleVerifyMsg({ ok: false, text: `No match found — ${cleanPin} is not a valid India Post pincode.` });
+                      notify(`No match found for pincode ${cleanPin}. Please verify the Indian pincode.`, 'error');
+                      return;
+                    }
+                    if (lookup.found && !newPinRule.cityLabel.trim()) {
+                      newPinRule.cityLabel = `${lookup.postOffice.district}, ${lookup.postOffice.state}`;
+                    }
+                  }
+
+                  const ruleToSave: PincodeDeliveryRule = {
+                    ...newPinRule,
+                    pincode: cleanPin,
+                    cityLabel: newPinRule.cityLabel.trim() || `Zone ${cleanPin}`,
+                    deliveryDays: Math.max(0, Math.min(30, Number(newPinRule.deliveryDays) || 0)),
+                  };
+
+                  const updatedRules = [
+                    ruleToSave,
+                    ...deliveryCfg.pincodeRules.filter((r) => r.pincode !== cleanPin),
+                  ];
+                  const nextCfg = {
+                    ...settingsForm,
+                    deliveryConfig: { ...deliveryCfg, pincodeRules: updatedRules },
+                  };
+                  await saveStoreConfigAcrossStores(nextCfg, `Delivery rule saved for pincode ${cleanPin}!`);
+                  setNewPinRule({
+                    pincode: '',
+                    cityLabel: '',
+                    serviceable: true,
+                    deliveryDays: 1,
+                    codAvailable: true,
+                    courierPartner: '',
+                    note: '',
+                  });
+                  setPinRuleVerifyMsg(null);
+                }}
+                className="grid sm:grid-cols-12 gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 items-end"
+              >
+                <div className="sm:col-span-3">
+                  <label className="block text-slate-500 mb-1">6-Digit Pincode / 3-Digit Prefix</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      required
+                      maxLength={6}
+                      value={newPinRule.pincode}
+                      onChange={(e) => {
+                        setNewPinRule({ ...newPinRule, pincode: e.target.value.replace(/\D/g, '').slice(0, 6) });
+                        setPinRuleVerifyMsg(null);
+                      }}
+                      placeholder="400051 or 400"
+                      className="flex-1 h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                    />
+                    <button
+                      type="button"
+                      disabled={pinRuleVerifying || newPinRule.pincode.length !== 6}
+                      onClick={async () => {
+                        setPinRuleVerifying(true);
+                        const lookup = await lookupIndiaPostPincode(newPinRule.pincode);
+                        setPinRuleVerifying(false);
+                        if (lookup.found) {
+                          const label = `${lookup.postOffice.name}, ${lookup.postOffice.district}, ${lookup.postOffice.state}`;
+                          setNewPinRule((prev) => ({
+                            ...prev,
+                            cityLabel: `${lookup.postOffice.district}, ${lookup.postOffice.state}`,
+                          }));
+                          setPinRuleVerifyMsg({ ok: true, text: `Verified: ${label}` });
+                        } else if (lookup.noMatch) {
+                          setPinRuleVerifyMsg({ ok: false, text: 'No match in India Post records.' });
+                        } else {
+                          setPinRuleVerifyMsg({ ok: false, text: 'India Post unreachable right now.' });
+                        }
+                      }}
+                      className="px-2.5 h-9 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 font-semibold text-[#0B1F3A] disabled:opacity-40"
+                    >
+                      {pinRuleVerifying ? '...' : 'Verify'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="sm:col-span-3">
+                  <label className="block text-slate-500 mb-1">City / Post Office Label</label>
+                  <input
+                    value={newPinRule.cityLabel}
+                    onChange={(e) => setNewPinRule({ ...newPinRule, cityLabel: e.target.value })}
+                    placeholder="e.g. Mumbai BKC"
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-500 mb-1">Delivery Days (0 = Today)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={newPinRule.deliveryDays}
+                    onChange={(e) =>
+                      setNewPinRule({ ...newPinRule, deliveryDays: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })
+                    }
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white font-mono"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-500 mb-1">Service Status</label>
+                  <select
+                    value={newPinRule.serviceable ? 'yes' : 'no'}
+                    onChange={(e) => setNewPinRule({ ...newPinRule, serviceable: e.target.value === 'yes' })}
+                    className="w-full h-9 px-2.5 rounded-lg border border-slate-300 bg-white"
+                  >
+                    <option value="yes">Deliverable</option>
+                    <option value="no">Blocked / No Service</option>
+                  </select>
+                </div>
+
+                <div className="sm:col-span-2 flex items-center gap-2 h-9">
+                  <label className="flex items-center gap-1.5 font-semibold text-[#0B1F3A] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newPinRule.codAvailable}
+                      onChange={(e) => setNewPinRule({ ...newPinRule, codAvailable: e.target.checked })}
+                      className="accent-[#EA580C]"
+                    />
+                    <span>COD Allowed</span>
+                  </label>
+                </div>
+
+                <div className="sm:col-span-4">
+                  <label className="block text-slate-500 mb-1">Courier Partner (Optional)</label>
+                  <input
+                    value={newPinRule.courierPartner || ''}
+                    onChange={(e) => setNewPinRule({ ...newPinRule, courierPartner: e.target.value })}
+                    placeholder="e.g. Aagaman Same-Day Hub"
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-5">
+                  <label className="block text-slate-500 mb-1">Customer Note (Optional)</label>
+                  <input
+                    value={newPinRule.note || ''}
+                    onChange={(e) => setNewPinRule({ ...newPinRule, note: e.target.value })}
+                    placeholder="e.g. Express van dispatch or Flood/Weather delay"
+                    className="w-full h-9 px-3 rounded-lg border border-slate-300 bg-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-3">
+                  <button
+                    type="submit"
+                    disabled={pinRuleVerifying}
+                    className="w-full h-9 rounded-lg bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold"
+                  >
+                    Add / Save Pincode Rule
+                  </button>
+                </div>
+
+                {pinRuleVerifyMsg && (
+                  <p className={`sm:col-span-12 text-[11px] font-medium ${pinRuleVerifyMsg.ok ? 'text-emerald-700' : 'text-red-600'}`}>
+                    {pinRuleVerifyMsg.text}
+                  </p>
+                )}
+              </form>
+
+              {deliveryCfg.pincodeRules.length === 0 ? (
+                <p className="text-slate-500 text-center py-6 border border-dashed border-slate-300 rounded-xl">
+                  No custom pincode overrides added yet. All valid India Post pincodes currently use your Metro / Standard / Remote schedule above.
+                </p>
+              ) : (
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-100 text-slate-600 uppercase text-[11px]">
+                      <tr>
+                        <th className="py-2.5 px-3">Pincode</th>
+                        <th className="py-2.5 px-3">Area / City</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Delivery Timing</th>
+                        <th className="py-2.5 px-3">COD</th>
+                        <th className="py-2.5 px-3">Courier / Note</th>
+                        <th className="py-2.5 px-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {deliveryCfg.pincodeRules.map((rule) => (
+                        <tr key={rule.pincode} className="hover:bg-slate-50">
+                          <td className="py-2.5 px-3 font-mono font-bold text-[#0B1F3A]">
+                            {rule.pincode}
+                            {rule.pincode.length === 3 && (
+                              <span className="ml-1.5 text-[10px] font-sans font-normal text-slate-500">(Prefix)</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-700">{rule.cityLabel}</td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded font-semibold ${
+                                rule.serviceable ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-700'
+                              }`}
+                            >
+                              {rule.serviceable ? 'Deliverable' : 'Blocked'}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-700">
+                            {rule.serviceable ? (
+                              <span>
+                                <strong>{rule.deliveryDays === 0 ? 'Same Day' : `${rule.deliveryDays} day(s)`}</strong> ·{' '}
+                                {formatEstimatedDeliveryDate(rule.deliveryDays, false)}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">{rule.codAvailable ? 'Allowed' : 'Prepaid'}</td>
+                          <td className="py-2.5 px-3 text-slate-500">
+                            {[rule.courierPartner, rule.note].filter(Boolean).join(' · ') || 'Default'}
+                          </td>
+                          <td className="py-2.5 px-3 text-right space-x-2">
+                            <button
+                              type="button"
+                              onClick={() => setNewPinRule(rule)}
+                              className="text-[#0B1F3A] hover:text-[#EA580C] font-semibold"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const updated = deliveryCfg.pincodeRules.filter((r) => r.pincode !== rule.pincode);
+                                await saveStoreConfigAcrossStores(
+                                  { ...settingsForm, deliveryConfig: { ...deliveryCfg, pincodeRules: updated } },
+                                  `Removed rule for ${rule.pincode}.`
+                                );
+                              }}
+                              className="text-red-600 hover:underline font-semibold"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* SETTINGS & SUPPORT TICKETS */}
         {tab === 'settings' && settingsForm && (
           <div className="grid lg:grid-cols-12 gap-6">
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (isStaticToken(adminToken)) {
-                  await updateStaticAdminSettings(settingsForm, adminToken);
-                  await saveFirestoreStoreConfig(settingsForm).catch(() => {});
-                  await refreshStoreMeta();
-                  notify('Store settings updated!', 'success');
-                  return;
-                }
-                const res = await fetch('/api/admin/settings', {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-                  body: JSON.stringify({ config: settingsForm }),
-                });
-                if (res.ok) {
-                  await refreshStoreMeta();
-                  notify('Store settings updated!', 'success');
-                }
+                await saveStoreConfigAcrossStores(settingsForm, 'Store settings updated!');
               }}
               className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-4 text-xs"
             >
-              <h3 className="font-display text-base font-bold text-[#0B1F3A]">Store, Shipping & GST Settings</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-display text-base font-bold text-[#0B1F3A]">Store, Shipping &amp; GST Settings</h3>
+                <button
+                  type="button"
+                  onClick={() => setTab('delivery')}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-[#0B1F3A] font-semibold flex items-center gap-1.5"
+                >
+                  <Truck className="w-3.5 h-3.5 text-[#EA580C]" /> Configure Delivery Dates &amp; Pincodes →
+                </button>
+              </div>
               <div className="grid sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-500 mb-1">Support Email Address</label>

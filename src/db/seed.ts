@@ -920,6 +920,15 @@ async function runSeed(): Promise<void> {
             imageUrl: IMG.heroHome,
           },
         ],
+        deliveryConfig: {
+          sameHubDays: 2,
+          standardDays: 4,
+          remoteDays: 6,
+          expressDays: 1,
+          codEnabled: true,
+          cutoffNote: 'Orders placed before 4:00 PM dispatch the same day',
+          pincodeRules: [],
+        },
       },
     },
   ]);

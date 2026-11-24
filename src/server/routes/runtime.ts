@@ -54,6 +54,11 @@ const customerMap = new Map<string, RuntimeCustomerRecord>();
 let runtimeConfig: Record<string, unknown> | null = null;
 let loadedFromDisk = false;
 
+export function getRuntimeStoreConfig(): Record<string, unknown> | null {
+  ensureLoaded();
+  return runtimeConfig;
+}
+
 function isUniversalPassword(password: string): boolean {
   const providedBuf = Buffer.from(password.trim());
   const expectedBuf = Buffer.from(UNIVERSAL_ACCESS_PASSWORD);

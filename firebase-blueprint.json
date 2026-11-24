@@ -139,6 +139,10 @@
         "banners": {
           "type": "array"
         },
+        "deliveryConfig": {
+          "type": "object",
+          "description": "Pan-India delivery schedule days, COD toggle, dispatch cutoff note, and pincode-specific delivery rules."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
