@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { Lock, Mail, Phone, User, X } from 'lucide-react';
 import { auth, googleAuthProvider } from '../lib/firebase';
+import { syncGoogleCustomerToFirestore } from '../lib/firestore-sync';
 import { useStore } from '../context/StoreContext';
 import {
+  clearSavedStaticCustomerSession,
   hasJsonContentType,
   staticForgotPassword,
   staticLoginCustomer,
@@ -11,7 +13,10 @@ import {
   staticResetPassword,
   staticSyncFirebaseCustomer,
   syncStaticCustomerToServer,
+  upsertStaticCustomerSession,
 } from '../lib/static-store';
+
+class AuthRequestError extends Error {}
 
 export const AuthModal: React.FC = () => {
   const { isAuthModalOpen, setIsAuthModalOpen, setCustomerSession, notify } = useStore();
@@ -43,14 +48,14 @@ export const AuthModal: React.FC = () => {
         });
         if (hasJsonContentType(res) && res.status < 500) {
           const json = await res.json();
-          if (!res.ok) throw new Error(json.error || 'Google sign-in failed.');
+          if (!res.ok) throw new AuthRequestError(json.error || 'Google sign-in failed.');
           await setCustomerSession(idToken, json.user);
           setIsAuthModalOpen(false);
           notify(`Welcome back, ${json.user.name}!`, 'success');
           return;
         }
       } catch (innerErr) {
-        if (innerErr instanceof Error && innerErr.message.includes('failed')) throw innerErr;
+        if (innerErr instanceof AuthRequestError) throw innerErr;
       }
 
       const staticSession = staticSyncFirebaseCustomer({
@@ -60,6 +65,26 @@ export const AuthModal: React.FC = () => {
         photoURL: cred.user.photoURL,
         emailVerified: cred.user.emailVerified,
       });
+
+      try {
+        const fsRes = await syncGoogleCustomerToFirestore({
+          uid: cred.user.uid,
+          name: staticSession.user.name,
+          email: staticSession.user.email,
+          phone: staticSession.user.phone,
+          photoUrl: staticSession.user.photoUrl,
+          emailVerified: cred.user.emailVerified,
+          phoneVerified: staticSession.user.phoneVerified,
+        });
+        if (fsRes.isBlocked) {
+          clearSavedStaticCustomerSession();
+          await firebaseSignOut(auth).catch(() => {});
+          throw new AuthRequestError('This account has been suspended. Please contact support.');
+        }
+      } catch (fsErr) {
+        if (fsErr instanceof AuthRequestError) throw fsErr;
+      }
+
       await syncStaticCustomerToServer({
         ...staticSession.user,
         authMethod: 'google',
@@ -101,17 +126,35 @@ export const AuthModal: React.FC = () => {
           });
           if (hasJsonContentType(res) && res.status < 500) {
             const json = await res.json();
-            if (!res.ok) throw new Error(json.error || 'Sign in failed.');
+            if (!res.ok) throw new AuthRequestError(json.error || 'Sign in failed.');
             await setCustomerSession(json.token, json.user);
             setIsAuthModalOpen(false);
             notify(`Welcome back, ${json.user.name}!`, 'success');
             return;
           }
         } catch (err) {
-          if (err instanceof Error && (err.message.includes('Invalid') || err.message.includes('Sign in') || err.message.includes('blocked') || err.message.includes('Google'))) {
-            throw err;
-          }
+          if (err instanceof AuthRequestError) throw err;
         }
+
+        try {
+          const rtRes = await fetch('/api/runtime/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          if (hasJsonContentType(rtRes) && rtRes.status < 500) {
+            const rtJson = await rtRes.json();
+            if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Invalid email or password.');
+            const session = upsertStaticCustomerSession(rtJson.user, password);
+            await setCustomerSession(session.token, session.user);
+            setIsAuthModalOpen(false);
+            notify(`Welcome back, ${session.user.name}!`, 'success');
+            return;
+          }
+        } catch (err) {
+          if (err instanceof AuthRequestError) throw err;
+        }
+
         const session = staticLoginCustomer(email, password);
         await syncStaticCustomerToServer({ ...session.user, authMethod: 'email' });
         await setCustomerSession(session.token, session.user);
@@ -131,22 +174,35 @@ export const AuthModal: React.FC = () => {
           });
           if (hasJsonContentType(res) && res.status < 500) {
             const json = await res.json();
-            if (!res.ok) throw new Error(json.error || 'Registration failed.');
+            if (!res.ok) throw new AuthRequestError(json.error || 'Registration failed.');
             await setCustomerSession(json.token, json.user);
             setIsAuthModalOpen(false);
             notify('Account created! Welcome to AAGAMAN MART.', 'success');
             return;
           }
         } catch (err) {
-          if (
-            err instanceof Error &&
-            (err.message.toLowerCase().includes('exists') ||
-              err.message.toLowerCase().includes('registration') ||
-              err.message.toLowerCase().includes('password'))
-          ) {
-            throw err;
-          }
+          if (err instanceof AuthRequestError) throw err;
         }
+
+        try {
+          const rtRes = await fetch('/api/runtime/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, email, phone: formattedPhone, password }),
+          });
+          if (hasJsonContentType(rtRes) && rtRes.status < 500) {
+            const rtJson = await rtRes.json();
+            if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Registration failed.');
+            const session = upsertStaticCustomerSession(rtJson.user, password);
+            await setCustomerSession(session.token, session.user);
+            setIsAuthModalOpen(false);
+            notify('Account created! Welcome to AAGAMAN MART.', 'success');
+            return;
+          }
+        } catch (err) {
+          if (err instanceof AuthRequestError) throw err;
+        }
+
         const session = staticRegisterCustomer({ name, email, phone: formattedPhone, password });
         await syncStaticCustomerToServer({ ...session.user, authMethod: 'email' });
         await setCustomerSession(session.token, session.user);
@@ -162,14 +218,31 @@ export const AuthModal: React.FC = () => {
             });
             if (hasJsonContentType(res) && res.status < 500) {
               const json = await res.json();
-              if (!res.ok) throw new Error(json.error || 'Could not initiate reset.');
+              if (!res.ok) throw new AuthRequestError(json.error || 'Could not initiate reset.');
               if (json.sandboxCode) setSandboxResetHint(json.sandboxCode);
               setResetStep('confirm');
               notify('Password reset code issued.', 'info');
               return;
             }
           } catch (err) {
-            if (err instanceof Error && err.message.includes('Could not')) throw err;
+            if (err instanceof AuthRequestError) throw err;
+          }
+          try {
+            const rtRes = await fetch('/api/runtime/auth/forgot-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email }),
+            });
+            if (hasJsonContentType(rtRes) && rtRes.status < 500) {
+              const rtJson = await rtRes.json();
+              if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Could not initiate reset.');
+              if (rtJson.sandboxCode) setSandboxResetHint(rtJson.sandboxCode);
+              setResetStep('confirm');
+              notify('Password reset code issued.', 'info');
+              return;
+            }
+          } catch (err) {
+            if (err instanceof AuthRequestError) throw err;
           }
           const json = staticForgotPassword(email);
           if (json.sandboxCode) setSandboxResetHint(json.sandboxCode);
@@ -184,7 +257,7 @@ export const AuthModal: React.FC = () => {
             });
             if (hasJsonContentType(res) && res.status < 500) {
               const json = await res.json();
-              if (!res.ok) throw new Error(json.error || 'Reset failed.');
+              if (!res.ok) throw new AuthRequestError(json.error || 'Reset failed.');
               setMode('login');
               setResetStep('request');
               setSandboxResetHint('');
@@ -192,7 +265,25 @@ export const AuthModal: React.FC = () => {
               return;
             }
           } catch (err) {
-            if (err instanceof Error && (err.message.includes('Reset') || err.message.includes('Invalid'))) throw err;
+            if (err instanceof AuthRequestError) throw err;
+          }
+          try {
+            const rtRes = await fetch('/api/runtime/auth/reset-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email, code: resetCode, newPassword: password }),
+            });
+            if (hasJsonContentType(rtRes) && rtRes.status < 500) {
+              const rtJson = await rtRes.json();
+              if (!rtRes.ok) throw new AuthRequestError(rtJson.error || 'Reset failed.');
+              setMode('login');
+              setResetStep('request');
+              setSandboxResetHint('');
+              notify('Password updated! Please sign in.', 'success');
+              return;
+            }
+          } catch (err) {
+            if (err instanceof AuthRequestError) throw err;
           }
           staticResetPassword(email, resetCode, password);
           setMode('login');

@@ -1,0 +1,216 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'utkarshjaiswar137@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll([
+          'uid',
+          'name',
+          'email',
+          'phone',
+          'photoUrl',
+          'authMethod',
+          'emailVerified',
+          'phoneVerified',
+          'isBlocked',
+          'wishlistCount',
+          'orderCount',
+          'totalSpent',
+          'createdAt',
+          'updatedAt',
+          'lastLoginAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'name',
+          'email',
+          'phone',
+          'photoUrl',
+          'authMethod',
+          'emailVerified',
+          'phoneVerified',
+          'isBlocked',
+          'wishlistCount',
+          'orderCount',
+          'totalSpent',
+          'createdAt',
+          'updatedAt',
+          'lastLoginAt'
+        ])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.phone is string && data.phone.size() <= 30
+        && data.photoUrl is string && data.photoUrl.size() <= 1000
+        && data.authMethod is string && data.authMethod in ['google', 'email']
+        && data.emailVerified is bool
+        && data.phoneVerified is bool
+        && data.isBlocked is bool
+        && data.wishlistCount is int && data.wishlistCount >= 0 && data.wishlistCount <= 10000
+        && data.orderCount is int && data.orderCount >= 0 && data.orderCount <= 100000
+        && data.totalSpent is number && data.totalSpent >= 0 && data.totalSpent <= 100000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.lastLoginAt is timestamp;
+    }
+
+    function isValidStoreConfig(data) {
+      return data.keys().hasAll([
+          'siteName',
+          'tagline',
+          'announcementText',
+          'announcementEnabled',
+          'supportEmail',
+          'supportPhone',
+          'headquarters',
+          'freeShippingThreshold',
+          'standardShippingCharge',
+          'expressShippingCharge',
+          'defaultGstPercent',
+          'flashSaleTitle',
+          'flashSaleSubtitle',
+          'banners',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'siteName',
+          'tagline',
+          'announcementText',
+          'announcementEnabled',
+          'supportEmail',
+          'supportPhone',
+          'headquarters',
+          'freeShippingThreshold',
+          'standardShippingCharge',
+          'expressShippingCharge',
+          'defaultGstPercent',
+          'flashSaleTitle',
+          'flashSaleSubtitle',
+          'banners',
+          'updatedAt'
+        ])
+        && data.siteName is string && data.siteName.size() >= 1 && data.siteName.size() <= 120
+        && data.tagline is string && data.tagline.size() <= 240
+        && data.announcementText is string && data.announcementText.size() <= 300
+        && data.announcementEnabled is bool
+        && data.supportEmail is string && data.supportEmail.size() <= 200
+        && data.supportPhone is string && data.supportPhone.size() <= 40
+        && data.headquarters is string && data.headquarters.size() <= 300
+        && data.freeShippingThreshold is number && data.freeShippingThreshold >= 0 && data.freeShippingThreshold <= 1000000
+        && data.standardShippingCharge is number && data.standardShippingCharge >= 0 && data.standardShippingCharge <= 10000
+        && data.expressShippingCharge is number && data.expressShippingCharge >= 0 && data.expressShippingCharge <= 10000
+        && data.defaultGstPercent is number && data.defaultGstPercent >= 0 && data.defaultGstPercent <= 28
+        && data.flashSaleTitle is string && data.flashSaleTitle.size() <= 160
+        && data.flashSaleSubtitle is string && data.flashSaleSubtitle.size() <= 400
+        && data.banners is list && data.banners.size() <= 10
+        && (data.banners.size() == 0 || data.banners[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
+    match /customers/{customerId} {
+      allow get: if isSignedIn() && isValidId(customerId) && (isOwner(customerId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(customerId)
+        && isOwner(customerId)
+        && isValidCustomer(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().uid == customerId
+        && incoming().email == request.auth.token.email
+        && incoming().isBlocked == false
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().lastLoginAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(customerId)
+        && isValidCustomer(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().authMethod == existing().authMethod
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isBlocked', 'updatedAt']))
+          || (
+            isOwner(customerId)
+            && incoming().isBlocked == existing().isBlocked
+            && incoming().lastLoginAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'phone',
+              'photoUrl',
+              'emailVerified',
+              'phoneVerified',
+              'wishlistCount',
+              'orderCount',
+              'totalSpent',
+              'lastLoginAt',
+              'updatedAt'
+            ])
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /storeConfig/{configId} {
+      allow get: if isValidId(configId) && configId == 'main';
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(configId)
+        && configId == 'main'
+        && isValidStoreConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(configId)
+        && configId == 'main'
+        && isValidStoreConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, write: if false;
+    }
+  }
+}

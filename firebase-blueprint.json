@@ -1,0 +1,193 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "Verified AAGAMAN MART customer account profile synced for storefront and admin visibility.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "authMethod": {
+          "type": "string",
+          "enum": ["google", "email"]
+        },
+        "emailVerified": {
+          "type": "boolean"
+        },
+        "phoneVerified": {
+          "type": "boolean"
+        },
+        "isBlocked": {
+          "type": "boolean"
+        },
+        "wishlistCount": {
+          "type": "integer"
+        },
+        "orderCount": {
+          "type": "integer"
+        },
+        "totalSpent": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "email",
+        "phone",
+        "photoUrl",
+        "authMethod",
+        "emailVerified",
+        "phoneVerified",
+        "isBlocked",
+        "wishlistCount",
+        "orderCount",
+        "totalSpent",
+        "createdAt",
+        "updatedAt",
+        "lastLoginAt"
+      ]
+    },
+    "StoreConfig": {
+      "title": "StoreConfig",
+      "description": "Public storefront configuration including store address, support email, announcement bar, and hero banners.",
+      "type": "object",
+      "properties": {
+        "siteName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "tagline": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "announcementText": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "announcementEnabled": {
+          "type": "boolean"
+        },
+        "supportEmail": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "supportPhone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "headquarters": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "freeShippingThreshold": {
+          "type": "number"
+        },
+        "standardShippingCharge": {
+          "type": "number"
+        },
+        "expressShippingCharge": {
+          "type": "number"
+        },
+        "defaultGstPercent": {
+          "type": "number"
+        },
+        "flashSaleTitle": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "flashSaleSubtitle": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "banners": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "siteName",
+        "tagline",
+        "announcementText",
+        "announcementEnabled",
+        "supportEmail",
+        "supportPhone",
+        "headquarters",
+        "freeShippingThreshold",
+        "standardShippingCharge",
+        "expressShippingCharge",
+        "defaultGstPercent",
+        "flashSaleTitle",
+        "flashSaleSubtitle",
+        "banners",
+        "updatedAt"
+      ]
+    },
+    "AdminMember": {
+      "title": "AdminMember",
+      "description": "Authorized store administrator registry document.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200
+        }
+      },
+      "required": ["email"]
+    }
+  },
+  "firestore": {
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Authenticated customer profile documents readable only by the owning customer or store admin."
+    },
+    "/storeConfig/{configId}": {
+      "schema": { "$ref": "#/entities/StoreConfig" },
+      "description": "Storefront configuration document at /storeConfig/main readable publicly and writable only by admin."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminMember" },
+      "description": "Admin role documents used by Firestore rules."
+    }
+  }
+}

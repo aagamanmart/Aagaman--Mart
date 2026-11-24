@@ -29,8 +29,18 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { signInWithPopup } from 'firebase/auth';
 import { InvoiceModal } from '../components/InvoiceModal';
 import { formatINR, useStore } from '../context/StoreContext';
+import { auth, googleAuthProvider } from '../lib/firebase';
+import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  fetchFirestoreCustomersAsAdmin,
+  fetchFirestoreStoreConfig,
+  isFirebaseBootstrappedAdmin,
+  saveFirestoreStoreConfig,
+  toggleFirestoreCustomerBlock,
+} from '../lib/firestore-sync';
 import {
   createStaticAdminCategory,
   createStaticAdminCoupon,
@@ -224,6 +234,7 @@ export const AdminPage: React.FC = () => {
   >([]);
   interface AdminCustomerItem {
     id: number;
+    uid?: string;
     name: string;
     email: string;
     phone: string;
@@ -245,6 +256,7 @@ export const AdminPage: React.FC = () => {
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerFilter, setCustomerFilter] = useState<'all' | 'email' | 'google' | 'blocked'>('all');
   const [selectedCustomer, setSelectedCustomer] = useState<AdminCustomerItem | null>(null);
+  const [firebaseAdminConnected, setFirebaseAdminConnected] = useState<boolean>(() => isFirebaseBootstrappedAdmin());
   const [adminPayments, setAdminPayments] = useState<
     Array<{
       id: number;
@@ -398,68 +410,84 @@ export const AdminPage: React.FC = () => {
       setSettingsForm(localSettings);
       setAdminTickets(getStaticAdminTickets());
 
+      setFirebaseAdminConnected(isFirebaseBootstrappedAdmin());
       try {
-        const [rtCustRes, rtCfgRes] = await Promise.all([
-          fetch('/api/runtime/customers', { headers: { Authorization: `Bearer ${token}` } }),
-          fetch('/api/runtime/config'),
+        const [rtCustRes, rtCfgRes, fsCustomers, fsConfig] = await Promise.all([
+          fetch('/api/runtime/customers', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+          fetch('/api/runtime/config').catch(() => null),
+          fetchFirestoreCustomersAsAdmin().catch(() => [] as AdminCustomerItem[]),
+          fetchFirestoreStoreConfig().catch(() => null),
         ]);
-        if (isJsonApiResponse(rtCustRes)) {
+
+        const byEmail = new Map<string, AdminCustomerItem>();
+        const mergeCustomer = (incomingCust: AdminCustomerItem) => {
+          const key = (incomingCust.email || '').trim().toLowerCase();
+          if (!key) return;
+          const existing = byEmail.get(key);
+          if (!existing) {
+            byEmail.set(key, incomingCust);
+          } else {
+            byEmail.set(key, {
+              ...existing,
+              ...incomingCust,
+              uid: incomingCust.uid || existing.uid,
+              phone: incomingCust.phone || existing.phone,
+              photoUrl: incomingCust.photoUrl || existing.photoUrl,
+              addresses:
+                (incomingCust.addresses && incomingCust.addresses.length > 0
+                  ? incomingCust.addresses
+                  : existing.addresses) || [],
+              orderCount: Math.max(incomingCust.orderCount || 0, existing.orderCount || 0),
+              totalSpent: Math.max(incomingCust.totalSpent || 0, existing.totalSpent || 0),
+              recentOrders:
+                incomingCust.recentOrders && incomingCust.recentOrders.length > 0
+                  ? incomingCust.recentOrders
+                  : existing.recentOrders || [],
+              lastLoginAt:
+                new Date(incomingCust.lastLoginAt || 0).getTime() >= new Date(existing.lastLoginAt || 0).getTime()
+                  ? incomingCust.lastLoginAt
+                  : existing.lastLoginAt,
+            });
+          }
+        };
+
+        for (const lc of localCustomers) mergeCustomer(lc);
+        if (rtCustRes && isJsonApiResponse(rtCustRes)) {
           const rtCustJson = await rtCustRes.json();
           const remoteCustomers: AdminCustomerItem[] = Array.isArray(rtCustJson.customers)
             ? rtCustJson.customers
             : [];
-          const byEmail = new Map<string, AdminCustomerItem>();
-          for (const lc of localCustomers) {
-            byEmail.set(lc.email.trim().toLowerCase(), lc);
-          }
-          for (const rc of remoteCustomers) {
-            const key = (rc.email || '').trim().toLowerCase();
-            if (!key) continue;
-            const existing = byEmail.get(key);
-            if (!existing) {
-              byEmail.set(key, rc);
-            } else {
-              byEmail.set(key, {
-                ...existing,
-                ...rc,
-                phone: rc.phone || existing.phone,
-                photoUrl: rc.photoUrl || existing.photoUrl,
-                addresses: (rc.addresses && rc.addresses.length > 0 ? rc.addresses : existing.addresses) || [],
-                orderCount: Math.max(rc.orderCount || 0, existing.orderCount || 0),
-                totalSpent: Math.max(rc.totalSpent || 0, existing.totalSpent || 0),
-                recentOrders:
-                  rc.recentOrders && rc.recentOrders.length > 0
-                    ? rc.recentOrders
-                    : existing.recentOrders || [],
-                lastLoginAt:
-                  new Date(rc.lastLoginAt || 0).getTime() >= new Date(existing.lastLoginAt || 0).getTime()
-                    ? rc.lastLoginAt
-                    : existing.lastLoginAt,
-              });
-            }
-          }
-          const mergedCustomers = Array.from(byEmail.values()).sort(
-            (a, b) =>
-              new Date(b.lastLoginAt || b.createdAt || 0).getTime() -
-              new Date(a.lastLoginAt || a.createdAt || 0).getTime()
-          );
-          setAdminCustomers(mergedCustomers);
-          setDashboard({
-            ...staticDash,
-            kpis: {
-              ...staticDash.kpis,
-              totalCustomers: mergedCustomers.length,
-            },
-          });
+          for (const rc of remoteCustomers) mergeCustomer(rc);
         }
-        if (isJsonApiResponse(rtCfgRes)) {
+        for (const fc of fsCustomers) mergeCustomer(fc);
+
+        const mergedCustomers = Array.from(byEmail.values()).sort(
+          (a, b) =>
+            new Date(b.lastLoginAt || b.createdAt || 0).getTime() -
+            new Date(a.lastLoginAt || a.createdAt || 0).getTime()
+        );
+        setAdminCustomers(mergedCustomers);
+        setDashboard({
+          ...staticDash,
+          kpis: {
+            ...staticDash.kpis,
+            totalCustomers: mergedCustomers.length,
+          },
+        });
+
+        let mergedSettings = { ...localSettings };
+        if (fsConfig) {
+          mergedSettings = { ...mergedSettings, ...fsConfig };
+        }
+        if (rtCfgRes && isJsonApiResponse(rtCfgRes)) {
           const rtCfgJson = await rtCfgRes.json();
           if (rtCfgJson.config && typeof rtCfgJson.config === 'object') {
-            setSettingsForm({ ...localSettings, ...rtCfgJson.config });
+            mergedSettings = { ...mergedSettings, ...rtCfgJson.config };
           }
         }
+        setSettingsForm(mergedSettings);
       } catch {
-        // ignore offline runtime sync errors
+        // ignore offline runtime/Firestore sync errors
       }
       return;
     }
@@ -685,6 +713,7 @@ export const AdminPage: React.FC = () => {
           onClick={async () => {
             if (isStaticToken(adminToken)) {
               await updateStaticAdminSettings(settingsForm, adminToken);
+              await saveFirestoreStoreConfig(settingsForm).catch(() => {});
               await refreshStoreMeta();
               notify('Top announcement bar updated!', 'success');
               return;
@@ -811,6 +840,7 @@ export const AdminPage: React.FC = () => {
             onClick={async () => {
               if (isStaticToken(adminToken)) {
                 await updateStaticAdminSettings(settingsForm, adminToken);
+                await saveFirestoreStoreConfig(settingsForm).catch(() => {});
                 await refreshStoreMeta();
                 notify('Homepage hero banners updated!', 'success');
                 return;
@@ -1873,9 +1903,37 @@ export const AdminPage: React.FC = () => {
                     </option>
                   </select>
                 </div>
-                <p className="text-slate-500">
-                  Total Registered Accounts: <strong className="text-[#0B1F3A]">{adminCustomers.length}</strong>
-                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  {firebaseAdminConnected ? (
+                    <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
+                      Cloud Sync Active
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const cred = await signInWithPopup(auth, googleAuthProvider);
+                          if ((cred.user.email || '').trim().toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL) {
+                            notify(`Please sign in with admin Google account (${BOOTSTRAPPED_ADMIN_EMAIL}).`, 'error');
+                            return;
+                          }
+                          setFirebaseAdminConnected(true);
+                          await loadAllAdminData(adminToken);
+                          notify('Google Admin Cloud Sync connected!', 'success');
+                        } catch (err: unknown) {
+                          notify(err instanceof Error ? err.message : 'Google Admin connect failed.', 'error');
+                        }
+                      }}
+                      className="px-3 h-8 rounded-lg bg-[#0B1F3A] hover:bg-slate-800 text-white font-semibold"
+                    >
+                      Sync Cloud Customers (Google Admin)
+                    </button>
+                  )}
+                  <p className="text-slate-500">
+                    Total Registered Accounts: <strong className="text-[#0B1F3A]">{adminCustomers.length}</strong>
+                  </p>
+                </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
@@ -1983,6 +2041,9 @@ export const AdminPage: React.FC = () => {
                                 onClick={async () => {
                                   if (isStaticToken(adminToken)) {
                                     toggleStaticAdminCustomerBlock(c.id, !c.isBlocked);
+                                    if (c.uid && isFirebaseBootstrappedAdmin()) {
+                                      await toggleFirestoreCustomerBlock(c.uid, !c.isBlocked).catch(() => {});
+                                    }
                                     try {
                                       await fetch('/api/runtime/customers/block', {
                                         method: 'PATCH',
@@ -2226,6 +2287,7 @@ export const AdminPage: React.FC = () => {
                 e.preventDefault();
                 if (isStaticToken(adminToken)) {
                   await updateStaticAdminSettings(settingsForm, adminToken);
+                  await saveFirestoreStoreConfig(settingsForm).catch(() => {});
                   await refreshStoreMeta();
                   notify('Store settings updated!', 'success');
                   return;

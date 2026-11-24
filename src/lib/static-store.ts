@@ -1,3 +1,4 @@
+import { syncGoogleCustomerToFirestore } from './firestore-sync';
 import type {
   Address,
   Category,
@@ -1558,8 +1559,62 @@ export function staticSyncFirebaseCustomer(fb: {
     if (fb.photoURL) customer.photoUrl = fb.photoURL;
     if (fb.emailVerified) customer.emailVerified = true;
   }
+  if (customer.isBlocked) {
+    throw new Error('This account has been suspended. Please contact support.');
+  }
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
+  const token = `static_cust_${customer.id}`;
+  localStorage.setItem(AUTH_SESSION_KEY, token);
+  return { token, user: sanitizeCustomer(customer) };
+}
+
+export function upsertStaticCustomerSession(
+  serverUser: UserProfile & { authMethod?: string; createdAt?: string; lastLoginAt?: string; addresses?: Address[] },
+  password?: string
+) {
+  const dbState = loadStaticDb();
+  const normalized = serverUser.email.trim().toLowerCase();
+  const now = new Date().toISOString();
+  let customer = dbState.customers.find((c) => c.email === normalized || c.uid === serverUser.uid);
+
+  if (!customer) {
+    const id = (dbState.customers.reduce((m, c) => Math.max(m, c.id), 0) || 0) + 1;
+    customer = {
+      id,
+      uid: serverUser.uid || `static_uid_${id}`,
+      email: normalized,
+      name: serverUser.name || normalized.split('@')[0],
+      phone: serverUser.phone || '',
+      photoUrl: serverUser.photoUrl || '',
+      role: 'customer',
+      emailVerified: Boolean(serverUser.emailVerified),
+      phoneVerified: Boolean(serverUser.phoneVerified),
+      isBlocked: Boolean(serverUser.isBlocked),
+      password: password || '',
+      authMethod: (serverUser.authMethod as 'email' | 'google') || 'email',
+      createdAt: serverUser.createdAt || now,
+      lastLoginAt: serverUser.lastLoginAt || now,
+      addresses: Array.isArray(serverUser.addresses) ? serverUser.addresses : [],
+      wishlistIds: [],
+      notifications: [],
+    };
+    dbState.customers.push(customer);
+  } else {
+    customer.name = serverUser.name || customer.name;
+    customer.phone = serverUser.phone || customer.phone;
+    customer.photoUrl = serverUser.photoUrl || customer.photoUrl;
+    customer.emailVerified = Boolean(serverUser.emailVerified || customer.emailVerified);
+    customer.phoneVerified = Boolean(serverUser.phoneVerified || customer.phoneVerified);
+    customer.isBlocked = Boolean(serverUser.isBlocked);
+    customer.lastLoginAt = serverUser.lastLoginAt || now;
+    if (password) customer.password = password;
+    if (Array.isArray(serverUser.addresses) && serverUser.addresses.length > 0 && customer.addresses.length === 0) {
+      customer.addresses = serverUser.addresses;
+    }
+  }
+
+  saveStaticDb(dbState);
   const token = `static_cust_${customer.id}`;
   localStorage.setItem(AUTH_SESSION_KEY, token);
   return { token, user: sanitizeCustomer(customer) };
@@ -1611,6 +1666,7 @@ export function updateStaticCustomerProfile(token: string, patch: { name: string
   if (patch.photoUrl !== undefined) customer.photoUrl = patch.photoUrl.trim();
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
+  void syncGoogleCustomerToFirestore(customer).catch(() => {});
   return { user: sanitizeCustomer(customer) };
 }
 
@@ -1650,6 +1706,7 @@ export function verifyStaticCustomerOtp(token: string, otp: string) {
   customer.pendingOtp = undefined;
   saveStaticDb(dbState);
   void syncStaticCustomerToServer(customer);
+  void syncGoogleCustomerToFirestore(customer).catch(() => {});
   return { ok: true, phoneVerified: true };
 }
 

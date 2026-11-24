@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from '../lib/firebase';
+import { fetchFirestoreStoreConfig, syncGoogleCustomerToFirestore } from '../lib/firestore-sync';
 import {
   clearSavedStaticCustomerSession,
   getSavedStaticCustomerSession,
@@ -193,11 +194,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const staticMeta = getStaticStoreMeta();
     let resolvedConfig = staticMeta.config;
     try {
+      const fsCfg = await fetchFirestoreStoreConfig();
+      if (fsCfg) {
+        resolvedConfig = { ...resolvedConfig, ...fsCfg };
+      }
+    } catch {
+      // ignore Firestore config errors when offline
+    }
+    try {
       const runtimeRes = await fetch('/api/runtime/config');
       if (isJsonApiResponse(runtimeRes)) {
         const runtimeJson = await runtimeRes.json();
         if (runtimeJson.config && typeof runtimeJson.config === 'object') {
-          resolvedConfig = { ...staticMeta.config, ...runtimeJson.config };
+          resolvedConfig = { ...resolvedConfig, ...runtimeJson.config };
         }
       }
     } catch {
@@ -283,6 +292,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               photoURL: fbUser.photoURL,
               emailVerified: fbUser.emailVerified,
             });
+            try {
+              const fsRes = await syncGoogleCustomerToFirestore({
+                uid: fbUser.uid,
+                name: staticSession.user.name,
+                email: staticSession.user.email,
+                phone: staticSession.user.phone,
+                photoUrl: staticSession.user.photoUrl,
+                emailVerified: fbUser.emailVerified,
+                phoneVerified: staticSession.user.phoneVerified,
+              });
+              if (fsRes.isBlocked) {
+                clearSavedStaticCustomerSession();
+                await firebaseSignOut(auth).catch(() => {});
+                setAuthToken(null);
+                setUser(null);
+                setAuthLoading(false);
+                return;
+              }
+            } catch {
+              // ignore Firestore sync error when offline
+            }
             setAuthToken(staticSession.token);
             setUser(staticSession.user);
             setWishlistProducts(getStaticWishlistProducts(staticSession.token));
