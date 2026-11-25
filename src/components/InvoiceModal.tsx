@@ -49,7 +49,13 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ order, onClose }) =>
                 Date: {new Date(order.createdAt).toLocaleDateString('en-IN')}
                 <br />
                 Payment: {order.paymentMethod.toUpperCase()} ({order.paymentStatus.toUpperCase()})
-                {order.payment?.razorpayPaymentId && (
+                {(order.utrNumber || order.payment?.utrNumber) && (
+                  <>
+                    <br />
+                    UTR No: {order.utrNumber || order.payment?.utrNumber}
+                  </>
+                )}
+                {order.payment?.razorpayPaymentId && !order.utrNumber && (
                   <>
                     <br />
                     Txn ID: {order.payment.razorpayPaymentId}

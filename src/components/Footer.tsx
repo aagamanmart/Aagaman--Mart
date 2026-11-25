@@ -20,8 +20,8 @@ export const Footer: React.FC = () => {
           <div className="flex items-center gap-3 min-w-0">
             <ShieldCheck className="w-6 h-6 text-[#F97316] shrink-0" />
             <div className="min-w-0">
-              <p className="font-semibold text-white">Verified Razorpay & COD</p>
-              <p className="text-xs text-slate-300">UPI, Cards, Net Banking & Cash on Delivery</p>
+              <p className="font-semibold text-white">Verified UPI &amp; COD Checkout</p>
+              <p className="text-xs text-slate-300">Dynamic UPI QR &amp; Cash on Delivery</p>
             </div>
           </div>
           <div className="flex items-center gap-3 min-w-0">

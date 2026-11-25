@@ -277,6 +277,102 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+          'orderNumber',
+          'uid',
+          'customerName',
+          'customerEmail',
+          'customerPhone',
+          'paymentMethod',
+          'paymentStatus',
+          'utrNumber',
+          'payableAmount',
+          'subtotal',
+          'discountTotal',
+          'couponDiscount',
+          'gstTotal',
+          'shippingCharge',
+          'grandTotal',
+          'shippingMethod',
+          'status',
+          'pincode',
+          'city',
+          'state',
+          'addressLine1',
+          'items',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'orderNumber',
+          'uid',
+          'customerName',
+          'customerEmail',
+          'customerPhone',
+          'paymentMethod',
+          'paymentStatus',
+          'utrNumber',
+          'payableAmount',
+          'subtotal',
+          'discountTotal',
+          'couponDiscount',
+          'gstTotal',
+          'shippingCharge',
+          'grandTotal',
+          'shippingMethod',
+          'status',
+          'pincode',
+          'city',
+          'state',
+          'addressLine1',
+          'items',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.orderNumber)
+        && isValidId(data.uid)
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 200
+        && data.customerPhone is string && data.customerPhone.size() >= 1 && data.customerPhone.size() <= 30
+        && data.paymentMethod is string && data.paymentMethod in ['upi', 'cod']
+        && data.paymentStatus is string && data.paymentStatus in ['cod_pending', 'verification_pending', 'paid', 'failed']
+        && data.utrNumber is string && data.utrNumber.size() <= 12
+        && (
+          (data.paymentMethod == 'cod' && data.utrNumber == '')
+          || (data.paymentMethod == 'upi' && data.utrNumber.matches('^[0-9]{12}$'))
+        )
+        && data.payableAmount is number && data.payableAmount > 0 && data.payableAmount <= 100000000
+        && data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 100000000
+        && data.discountTotal is number && data.discountTotal >= 0 && data.discountTotal <= 100000000
+        && data.couponDiscount is number && data.couponDiscount >= 0 && data.couponDiscount <= 100000000
+        && data.gstTotal is number && data.gstTotal >= 0 && data.gstTotal <= 100000000
+        && data.shippingCharge is number && data.shippingCharge >= 0 && data.shippingCharge <= 100000
+        && data.grandTotal is number && data.grandTotal > 0 && data.grandTotal <= 100000000
+        && data.payableAmount == data.grandTotal
+        && data.shippingMethod is string && data.shippingMethod in ['Standard Delivery', 'Express Delivery']
+        && data.status is string && data.status in [
+          'Order Placed',
+          'Payment Pending',
+          'Payment Confirmed',
+          'Processing',
+          'Packed',
+          'Shipped',
+          'Out for Delivery',
+          'Delivered',
+          'Cancelled',
+          'Returned',
+          'Refunded'
+        ]
+        && data.pincode is string && data.pincode.size() == 6 && data.pincode.matches('^[1-9][0-9]{5}$')
+        && data.city is string && data.city.size() >= 1 && data.city.size() <= 120
+        && data.state is string && data.state.size() >= 1 && data.state.size() <= 120
+        && data.addressLine1 is string && data.addressLine1.size() >= 1 && data.addressLine1.size() <= 300
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /customers/{customerId} {
       allow get: if isSignedIn() && isValidId(customerId) && (isOwner(customerId) || isAdmin());
       allow list: if isBootstrappedAdmin();
@@ -378,6 +474,44 @@ service cloud.firestore {
           && incoming().createdAt == request.time;
         allow update, delete: if false;
       }
+    }
+
+    match /orders/{orderNumber} {
+      allow get: if isValidId(orderNumber) && (isAdmin() || (isVerifiedUser() && existing().uid == request.auth.uid));
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.uid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(orderNumber)
+        && isValidOrder(incoming())
+        && incoming().orderNumber == orderNumber
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'Order Placed'
+        && (
+          (incoming().paymentMethod == 'cod' && incoming().paymentStatus == 'cod_pending')
+          || (incoming().paymentMethod == 'upi' && incoming().paymentStatus == 'verification_pending')
+        )
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(orderNumber)
+        && isValidOrder(incoming())
+        && incoming().orderNumber == existing().orderNumber
+        && incoming().uid == existing().uid
+        && incoming().paymentMethod == existing().paymentMethod
+        && incoming().utrNumber == existing().utrNumber
+        && incoming().grandTotal == existing().grandTotal
+        && incoming().payableAmount == existing().payableAmount
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'updatedAt']))
+          || (
+            existing().uid == request.auth.uid
+            && existing().status in ['Order Placed', 'Payment Pending']
+            && incoming().status == 'Cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
     }
 
     match /admins/{adminUid} {

@@ -160,6 +160,9 @@ export interface OrderRecord {
   status: string;
   paymentStatus: string;
   paymentMethod: string;
+  utrNumber?: string | null;
+  payableAmount?: number;
+  paymentScreenshot?: string | null;
   subtotal: number;
   discountTotal: number;
   couponCode: string | null;
@@ -184,6 +187,8 @@ export interface OrderRecord {
     method: string;
     razorpayOrderId: string | null;
     razorpayPaymentId: string | null;
+    utrNumber?: string | null;
+    paymentScreenshot?: string | null;
     amount: number;
     status: string;
   } | null;

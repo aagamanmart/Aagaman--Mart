@@ -315,6 +315,152 @@
         "emailStatus",
         "createdAt"
       ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer e-commerce order with UPI (UTR verification) or Cash on Delivery payment details.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "customerEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "customerPhone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["upi", "cod"]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["cod_pending", "verification_pending", "paid", "failed"]
+        },
+        "utrNumber": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "payableAmount": {
+          "type": "number"
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "discountTotal": {
+          "type": "number"
+        },
+        "couponDiscount": {
+          "type": "number"
+        },
+        "gstTotal": {
+          "type": "number"
+        },
+        "shippingCharge": {
+          "type": "number"
+        },
+        "grandTotal": {
+          "type": "number"
+        },
+        "shippingMethod": {
+          "type": "string",
+          "enum": ["Standard Delivery", "Express Delivery"]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Order Placed",
+            "Payment Pending",
+            "Payment Confirmed",
+            "Processing",
+            "Packed",
+            "Shipped",
+            "Out for Delivery",
+            "Delivered",
+            "Cancelled",
+            "Returned",
+            "Refunded"
+          ]
+        },
+        "pincode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[1-9][0-9]{5}$"
+        },
+        "city": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "addressLine1": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "items": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderNumber",
+        "uid",
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "paymentMethod",
+        "paymentStatus",
+        "utrNumber",
+        "payableAmount",
+        "subtotal",
+        "discountTotal",
+        "couponDiscount",
+        "gstTotal",
+        "shippingCharge",
+        "grandTotal",
+        "shippingMethod",
+        "status",
+        "pincode",
+        "city",
+        "state",
+        "addressLine1",
+        "items",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -337,6 +483,10 @@
     "/supportTickets/{ticketId}/replies/{replyId}": {
       "schema": { "$ref": "#/entities/SupportTicketReply" },
       "description": "Admin replies to a support ticket readable by the ticket author or store admin, writable only by store admin."
+    },
+    "/orders/{orderNumber}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Verified customer orders containing UPI/COD payment method, payable amount, and 12-digit UTR number, readable by owner or store admin."
     }
   }
 }

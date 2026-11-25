@@ -9,6 +9,7 @@
 6. Client-supplied timestamps and shadow fields are rejected across all collections via `request.time` enforcement and `keys().hasAll(...) && keys().hasOnly(...)`.
 7. `/supportTickets/{ticketId}` documents require `isVerifiedUser()`, `uid == request.auth.uid`, `status == 'Open'`, bounded string lengths, and server `request.time` timestamps on `create`. Only the owning user or `isAdmin()` may read (`get`) a ticket; `list` is restricted to `isBootstrappedAdmin()` or `resource.data.uid == request.auth.uid`; only `isAdmin()` may update `status` and `updatedAt`.
 8. `/supportTickets/{ticketId}/replies/{replyId}` documents may only be created by `isAdmin()` with valid parent ticket `exists(...)`, matching `ticketUid == parent.uid`, bounded `message`, and `createdAt == request.time`. Only `isAdmin()` or the parent ticket owner (`resource.data.ticketUid == request.auth.uid`) may read replies; updates/deletes are forbidden.
+9. `/orders/{orderNumber}` documents require `isVerifiedUser()`, `uid == request.auth.uid`, `status == 'Order Placed'`, `payableAmount == grandTotal`, and strict payment validation (`paymentMethod == 'cod' && paymentStatus == 'cod_pending' && utrNumber == ''`, OR `paymentMethod == 'upi' && paymentStatus == 'verification_pending' && utrNumber` matches 12 digits). Only the owning user or `isAdmin()` may read (`get` / filtered `list`); only `isAdmin()` may verify/update `paymentStatus` or advance order lifecycle status.
 
 ## 2. Adversarial Payloads Covered ("Dirty Dozen")
 1. Unauthenticated `get` / `list` on `/customers/{uid}`.
@@ -22,4 +23,4 @@
 9. Customer `update` attempting to mutate `createdAt`, `uid`, or `email`.
 10. Customer `create` with oversized `name` (> 160 chars) or junk `customerId` (> 128 chars / invalid chars).
 11. Non-admin attempt to write `/storeConfig/main`.
-12. Non-admin attempt to write `/admins/{uid}`, create `/storeConfig/evil`, list `/supportTickets` without ownership filter, forge `status: 'Resolved'`, or write/read another user's `/supportTickets/{ticketId}/replies/{replyId}`.
+12. Non-admin attempt to write `/admins/{uid}`, create `/storeConfig/evil`, list `/supportTickets` or `/orders` without ownership filter, forge `status: 'Resolved'` / `paymentStatus: 'paid'`, omit 12-digit `utrNumber` on UPI orders, or write/read another user's `/supportTickets/{ticketId}/replies/{replyId}`.

@@ -102,6 +102,8 @@ export interface StaticPaymentRecord {
   method: string;
   razorpayOrderId: string | null;
   razorpayPaymentId: string | null;
+  utrNumber?: string | null;
+  paymentScreenshot?: string | null;
   amount: number;
   status: string;
   createdAt: string;
@@ -2138,6 +2140,8 @@ export function createStaticOrder(
     shippingMethod: 'Standard Delivery' | 'Express Delivery';
     paymentMethod: string;
     couponCode?: string;
+    utrNumber?: string;
+    paymentScreenshot?: string;
   }
 ) {
   const dbState = loadStaticDb();
@@ -2150,6 +2154,12 @@ export function createStaticOrder(
   );
 
   const isCod = payload.paymentMethod === 'cod';
+  const cleanUtr = (payload.utrNumber || '').trim();
+  const isDirectUpi = payload.paymentMethod === 'upi';
+  if (isDirectUpi && !/^\d{12}$/.test(cleanUtr)) {
+    throw new Error('Please enter a valid 12-digit UPI Transaction ID / UTR Number before placing your order.');
+  }
+
   const orderId = (dbState.orders.reduce((m, o) => Math.max(m, o.id), 0) || 100) + 1;
   const orderNumber = `AGM-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 899999)}`;
   const trackingNumber = `TRK${Math.floor(10000000 + Math.random() * 89999999)}IN`;
@@ -2163,9 +2173,10 @@ export function createStaticOrder(
     ? deliveryCfg.expressDays
     : deliveryCfg.standardDays;
   const estDelivery = formatEstimatedDeliveryDate(estDays, true);
-  const razorpayOrderId = isCod ? null : `order_rzp_sandbox_${Date.now().toString(36)}`;
+  const confirmImmediately = isCod || isDirectUpi;
+  const razorpayOrderId = confirmImmediately ? null : `order_rzp_sandbox_${Date.now().toString(36)}`;
 
-  if (isCod) {
+  if (confirmImmediately) {
     for (const item of summary.lineItems) {
       const prod = dbState.products.find((p) => p.id === item.productId);
       if (prod) {
@@ -2183,17 +2194,24 @@ export function createStaticOrder(
     }
   }
 
+  const safeScreenshot =
+    payload.paymentScreenshot && /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(payload.paymentScreenshot)
+      ? payload.paymentScreenshot.slice(0, 600000)
+      : null;
+
   const paymentRecord: StaticPaymentRecord = {
     id: (dbState.payments.reduce((m, p) => Math.max(m, p.id), 0) || 0) + 1,
     orderId,
     orderNumber,
     customerName: payload.customerName,
-    gateway: isCod ? 'cod' : 'razorpay',
+    gateway: isCod ? 'cod' : isDirectUpi ? 'upi_qr' : 'razorpay',
     method: payload.paymentMethod,
     razorpayOrderId,
-    razorpayPaymentId: null,
+    razorpayPaymentId: isDirectUpi ? cleanUtr : null,
+    utrNumber: isDirectUpi ? cleanUtr : null,
+    paymentScreenshot: isDirectUpi ? safeScreenshot : null,
     amount: summary.grandTotal,
-    status: isCod ? 'cod_pending' : 'pending',
+    status: isCod ? 'cod_pending' : isDirectUpi ? 'verification_pending' : 'pending',
     createdAt: new Date().toISOString(),
   };
 
@@ -2204,9 +2222,12 @@ export function createStaticOrder(
     customerEmail: payload.customerEmail,
     customerPhone: payload.customerPhone,
     addressSnapshot: payload.address,
-    status: isCod ? 'Order Placed' : 'Payment Pending',
-    paymentStatus: isCod ? 'cod_pending' : 'pending',
+    status: confirmImmediately ? 'Order Placed' : 'Payment Pending',
+    paymentStatus: isCod ? 'cod_pending' : isDirectUpi ? 'verification_pending' : 'pending',
     paymentMethod: payload.paymentMethod,
+    utrNumber: isDirectUpi ? cleanUtr : null,
+    payableAmount: summary.grandTotal,
+    paymentScreenshot: isDirectUpi ? safeScreenshot : null,
     subtotal: summary.subtotal,
     discountTotal: summary.discountTotal,
     couponCode: summary.couponCode,
@@ -2234,15 +2255,19 @@ export function createStaticOrder(
       courierPartner:
         payload.shippingMethod === 'Express Delivery' ? 'BlueDart Air Priority' : 'Delhivery Express',
       trackingNumber,
-      status: isCod ? 'Order Received' : 'Awaiting Payment',
+      status: confirmImmediately ? 'Order Received' : 'Awaiting Payment',
       estimatedDelivery: estDelivery,
       pincode: payload.address.pincode,
       trackingHistory: [
         {
-          status: isCod ? 'Order Placed' : 'Awaiting Payment',
+          status: confirmImmediately ? 'Order Placed' : 'Awaiting Payment',
           location: 'Mumbai Fulfillment Hub',
           timestamp: new Date().toISOString(),
-          note: isCod ? 'Cash on Delivery order confirmed.' : 'Waiting for online payment confirmation.',
+          note: isCod
+            ? 'Cash on Delivery order confirmed.'
+            : isDirectUpi
+            ? `UPI Payment UTR ${cleanUtr} submitted for verification.`
+            : 'Waiting for online payment confirmation.',
         },
       ],
     },
@@ -2251,7 +2276,9 @@ export function createStaticOrder(
       gateway: paymentRecord.gateway,
       method: paymentRecord.method,
       razorpayOrderId,
-      razorpayPaymentId: null,
+      razorpayPaymentId: paymentRecord.razorpayPaymentId,
+      utrNumber: paymentRecord.utrNumber,
+      paymentScreenshot: paymentRecord.paymentScreenshot,
       amount: summary.grandTotal,
       status: paymentRecord.status,
     },
@@ -2264,8 +2291,8 @@ export function createStaticOrder(
 
   return {
     order: newOrder,
-    requiresRazorpay: !isCod,
-    razorpay: !isCod
+    requiresRazorpay: !confirmImmediately,
+    razorpay: !confirmImmediately
       ? {
           mode: 'sandbox' as const,
           keyId: 'rzp_test_aagaman_sandbox',
@@ -2812,6 +2839,25 @@ export function markStaticAdminCodCollected(paymentId: number) {
     p.status = 'collected';
     const ord = dbState.orders.find((o) => o.id === p.orderId);
     if (ord) ord.paymentStatus = 'paid';
+    saveStaticDb(dbState);
+  }
+}
+
+export function verifyStaticAdminUpiPayment(paymentId: number) {
+  const dbState = loadStaticDb();
+  const p = dbState.payments.find((pay) => pay.id === paymentId);
+  if (p) {
+    p.status = 'paid';
+    const ord = dbState.orders.find((o) => o.id === p.orderId);
+    if (ord) {
+      ord.paymentStatus = 'paid';
+      if (ord.status === 'Order Placed' || ord.status === 'Payment Pending') {
+        ord.status = 'Payment Confirmed';
+      }
+      if (ord.payment) {
+        ord.payment.status = 'paid';
+      }
+    }
     saveStaticDb(dbState);
   }
 }
